@@ -227,7 +227,10 @@ pm2 restart aliyun-platform-backend
 # 停止后端
 pm2 stop aliyun-platform-backend
 
-# 前端开发
+# 启动前端服务（PM2）
+pm2 start "npx vite --host 0.0.0.0 --port 5174" --name aliyun-platform-frontend --cwd frontend
+
+# 前端开发（开发模式）
 cd frontend && npm run dev
 
 # 前端构建
