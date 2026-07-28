@@ -109,6 +109,13 @@
 start.bat
 ```
 
+### 一键部署（Linux/macOS）
+
+```bash
+chmod +x start.sh
+./start.sh
+```
+
 脚本会自动：
 1. 检查 Python 和 Node.js 环境
 2. 安装后端依赖（pip install）
