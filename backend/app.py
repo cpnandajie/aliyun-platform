@@ -14,7 +14,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 # 适配Python 3.12+的datetime序列化，消除DeprecationWarning
-# 适配Python 3.12+的datetime序列化，消除DeprecationWarning
 warnings.filterwarnings('ignore', category=DeprecationWarning, message='.*datetime adapter.*')
 def _adapt_datetime(dt):
     return dt.isoformat()
@@ -23,7 +22,6 @@ sqlite3.register_adapter(datetime, _adapt_datetime)
 app = Flask(__name__)
 CORS(app)
 
-# ==================== 全局错误处理 ====================
 # ==================== 全局错误处理 ====================
 
 @app.errorhandler(404)
@@ -298,7 +296,6 @@ def init_db():
 
 init_db()
 
-# ==================== 数据库辅助函数 ====================
 # ==================== 数据库辅助函数 ====================
 
 def get_db():
