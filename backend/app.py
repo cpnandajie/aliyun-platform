@@ -77,16 +77,13 @@ def cleanup_sync_tasks():
 # 数据库配置
 DB_PATH = '/home/aliyun-platform/backend/aliyun_platform.db'
 # 确保数据库目录存在
-# 确保数据库目录存在
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-# 备份目录
 # 备份目录
 BACKUP_DIR = os.path.join(os.path.dirname(DB_PATH), 'backups')
 os.makedirs(BACKUP_DIR, exist_ok=True)
 # 同步任务状态跟踪（内存字典，key=task_id）
 sync_tasks = {}
 sync_tasks_lock = threading.Lock()
-# 默认的阿里云区域
 # 默认的阿里云区域
 DEFAULT_REGIONS = [
     'cn-hangzhou', 'cn-shanghai', 'cn-beijing', 'cn-chengdu',
@@ -100,7 +97,6 @@ def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     # 账号表
-    # 账号表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -112,7 +108,6 @@ def init_db():
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    # ECS实例表
     # ECS实例表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS ecs_instances (
@@ -135,7 +130,6 @@ def init_db():
         )
     ''')
     # RDS实例表
-    # RDS实例表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS rds_instances (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,7 +151,6 @@ def init_db():
         )
     ''')
     # SLB实例表
-    # SLB实例表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS slb_instances (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -175,7 +168,6 @@ def init_db():
         )
     ''')
     # OSS Bucket表
-    # OSS Bucket表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS oss_buckets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -188,7 +180,6 @@ def init_db():
             FOREIGN KEY (account_id) REFERENCES accounts(id)
         )
     ''')
-    # Redis实例表
     # Redis实例表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS redis_instances (
