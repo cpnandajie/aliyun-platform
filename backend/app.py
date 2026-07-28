@@ -216,7 +216,6 @@ def init_db():
         )
     ''')
     # 账号余额表
-    # 账号余额表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS account_balance (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
