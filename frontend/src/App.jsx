@@ -152,12 +152,12 @@ function Sidebar({ activeMenu, onMenuChange }) {
     { key: 'overview', label: '资源概览', icon: '' },
     { key: 'resources', label: '资源管理', icon: '' },
     { key: 'bills', label: '账单管理', icon: '' },
-    { key: 'accounts', label: '账号管理', icon: '' },
     { key: 'ram', label: 'RAM 管理', icon: '' },
     { key: 'dns', label: '域名管理', icon: '' },
     { key: 'ssl', label: 'SSL 证书', icon: '' },
     { key: 'monitor', label: '云监控', icon: '' },
     { key: 'logs', label: '日志管理', icon: '' },
+    { key: 'accounts', label: '平台设置', icon: '' },
   ]
 
   return (
@@ -176,6 +176,59 @@ function Sidebar({ activeMenu, onMenuChange }) {
           </div>
         ))}
       </nav>
+    </div>
+  )
+}
+
+// ==================== 骨架屏组件 ====================
+function SkeletonOverview() {
+  return (
+    <div className="page-content">
+      <div className="page-header">
+        <h2>资源概览</h2>
+      </div>
+      <div className="skeleton-cards">
+        {[...Array(7)].map((_, i) => (
+          <div key={i} className="skeleton-section" style={{ padding: 20 }}>
+            <div className="skeleton skeleton-line" style={{ width: '40%' }}></div>
+            <div className="skeleton skeleton-card" style={{ height: 36 }}></div>
+          </div>
+        ))}
+      </div>
+      <div className="skeleton-section">
+        <div className="skeleton skeleton-line" style={{ width: '30%', marginBottom: 16 }}></div>
+        {[...Array(5)].map((_, i) => (
+          <div key={i} className="skeleton-table-row">
+            <div className="skeleton skeleton-table-cell"></div>
+            <div className="skeleton skeleton-table-cell"></div>
+            <div className="skeleton skeleton-table-cell"></div>
+            <div className="skeleton skeleton-table-cell"></div>
+            <div className="skeleton skeleton-table-cell"></div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function SkeletonTable({ columns = 6, rows = 5 }) {
+  return (
+    <div className="skeleton-section">
+      <div className="skeleton skeleton-line" style={{ width: '25%', marginBottom: 16 }}></div>
+      <div style={{ borderTop: '1px solid #f1f5f9' }}>
+        <div className="skeleton-table-row" style={{ borderBottom: '1px solid #e2e8f0' }}>
+          {[...Array(columns)].map((_, i) => (
+            <div key={i} className="skeleton skeleton-table-cell" style={{ height: 12 }}></div>
+          ))}
+        </div>
+        {[...Array(rows)].map((_, i) => (
+          <div key={i} className="skeleton-table-row">
+            {[...Array(columns)].map((_, j) => (
+              <div key={j} className="skeleton skeleton-table-cell"></div>
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -202,6 +255,11 @@ function ResourceOverview() {
   const totalRedis = overview.reduce((s, a) => s + a.redis_count, 0)
   const totalMonthAmount = overview.reduce((s, a) => s + a.month_amount, 0)
   const totalBalance = overview.reduce((s, a) => s + a.available_amount, 0)
+
+  // 首次加载显示骨架屏
+  if (loading && overview.length === 0) {
+    return <SkeletonOverview />
+  }
 
   return (
     <div className="page-content">
@@ -309,13 +367,13 @@ function ResourceManagement() {
       { key: 'account_name', label: '账号', sortable: true },
       { key: 'instance_id', label: '实例ID', sortable: true },
       { key: 'instance_name', label: '实例名称', sortable: true },
-      { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{v}</span> },
+      { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{STATUS_LABELS[v] || v}</span> },
       { key: 'instance_type', label: '规格', sortable: true },
       { key: 'cpu', label: 'CPU', sortable: true },
       { key: 'memory_gb', label: '内存(GB)', sortable: true },
       { key: 'private_ip', label: '内网IP' },
       { key: 'public_ip', label: '公网IP' },
-      { key: 'region_id', label: '区域', sortable: true },
+      { key: 'region_id', label: '区域', sortable: true, render: v => REGION_LABELS[v] || v },
     ],
     rds: [
       { key: 'account_name', label: '账号', sortable: true },
@@ -324,8 +382,8 @@ function ResourceManagement() {
       { key: 'engine', label: '引擎', sortable: true },
       { key: 'engine_version', label: '版本', sortable: true },
       { key: 'instance_type', label: '规格', sortable: true },
-      { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{v}</span> },
-      { key: 'region_id', label: '区域', sortable: true },
+      { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{STATUS_LABELS[v] || v}</span> },
+      { key: 'region_id', label: '区域', sortable: true, render: v => REGION_LABELS[v] || v },
     ],
     slb: [
       { key: 'account_name', label: '账号', sortable: true },
@@ -333,9 +391,9 @@ function ResourceManagement() {
       { key: 'instance_name', label: '实例名称', sortable: true },
       { key: 'address', label: '地址', className: 'td-mono' },
       { key: 'address_type', label: '地址类型', sortable: true },
-      { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{v}</span> },
+      { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{STATUS_LABELS[v] || v}</span> },
       { key: 'network_type', label: '网络类型', sortable: true },
-      { key: 'region_id', label: '区域', sortable: true },
+      { key: 'region_id', label: '区域', sortable: true, render: v => REGION_LABELS[v] || v },
     ],
     oss: [
       { key: 'account_name', label: '账号', sortable: true },
@@ -351,19 +409,31 @@ function ResourceManagement() {
       { key: 'architecture_type', label: '架构', sortable: true },
       { key: 'capacity', label: '容量', sortable: true },
       { key: 'engine_version', label: '版本', sortable: true },
-      { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{v}</span> },
+      { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{STATUS_LABELS[v] || v}</span> },
       { key: 'connection_domain', label: '连接地址', className: 'td-mono' },
-      { key: 'region_id', label: '区域', sortable: true },
+      { key: 'region_id', label: '区域', sortable: true, render: v => REGION_LABELS[v] || v },
     ],
   }
 
   const REGION_LABELS = {
-    'cn-hangzhou': '杭州窞', 'cn-shanghai': '上海', 'cn-beijing': '北京',
-    'cn-chengdu': '成都', 'ap-southeast-1': '新加坡', 'cn-shenzhen': '深圳',
-    'cn-zhangjiakou': '张家口', 'cn-huhehaote': '呼和浩特', 'cn-wulanchabu': '乌兰察布',
-    'cn-qingdao': '青岛', 'cn-guangzhou': '广州', 'cn-fuzhou': '福州',
-    'cn-heyuan': '河源', 'ap-southeast-5': '雅加达', 'ap-southeast-3': '吉隆坡',
-    'us-east-1': '美东', 'us-west-1': '美西', 'eu-central-1': '法兰克福',
+    'cn-hangzhou': '华东1（杭州）', 'cn-shanghai': '华东2（上海）', 'cn-nanjing': '华东5（南京）',
+    'cn-beijing': '华北2（北京）', 'cn-qingdao': '华北1（青岛）', 'cn-zhangjiakou': '华北3（张家口）',
+    'cn-huhehaote': '华北5（呼和浩特）', 'cn-wulanchabu': '华北6（乌兰察布）',
+    'cn-shenzhen': '华南1（深圳）', 'cn-heyuan': '华南2（河源）', 'cn-guangzhou': '华南3（广州）',
+    'cn-chengdu': '西南1（成都）', 'cn-hongkong': '中国香港',
+    'ap-southeast-1': '新加坡', 'ap-southeast-2': '悉尼', 'ap-southeast-3': '吉隆坡',
+    'ap-southeast-5': '雅加达', 'ap-southeast-6': '马尼拉', 'ap-southeast-7': '泰国（曼谷）',
+    'ap-northeast-1': '东京', 'ap-northeast-2': '韩国（首尔）', 'ap-south-1': '孟买',
+    'us-east-1': '美国（弗吉尼亚）', 'us-west-1': '美国（硅谷）',
+    'eu-west-1': '英国（伦敦）', 'eu-central-1': '德国（法兰克福）', 'me-east-1': '阿联酋（迪拜）',
+  }
+
+  const STATUS_LABELS = {
+    'Running': '运行中', 'Stopped': '已停止', 'Pending': '创建中', 'Starting': '启动中', 'Stopping': '停止中',
+    'Available': '可用', 'Unavailable': '不可用',
+    'Active': '正常', 'Inactive': '异常',
+    'Normal': '正常', 'Abnormal': '异常',
+    'InUse': '使用中', 'Expired': '已过期',
   }
 
   useEffect(() => {
@@ -503,6 +573,18 @@ function ResourceManagement() {
           ))}
         </tbody>
       </table>
+    )
+  }
+
+  // 首次加载显示骨架屏
+  if (loading && data.length === 0) {
+    return (
+      <div className="page-content">
+        <div className="page-header">
+          <h2>资源管理</h2>
+        </div>
+        <SkeletonTable columns={7} rows={8} />
+      </div>
     )
   }
 
@@ -749,7 +831,7 @@ function BillManagement() {
                       <td>{bill.account_name}</td>
                       <td>{bill.billing_cycle}</td>
                       <td className="td-amount">¥{fmtMoney(bill.total_amount)}</td>
-                      <td>{bill.updated_at}</td>
+                      <td>{fmtDate(bill.updated_at)}</td>
                       <td>
                         <button className="btn-link" onClick={() => showBillDetail(bill)}>
                           {selectedBill && selectedBill.account_id === bill.account_id ? '收起' : '查看明细'}
@@ -894,6 +976,37 @@ function AccountManagement() {
   const [autoSync, setAutoSync] = useState({ enabled: false, interval_hours: 6, last_sync_at: null })
   const [intervalDropdownOpen, setIntervalDropdownOpen] = useState(false)
   const intervalDropdownRef = useRef(null)
+  // 默认区域配置
+  const ALL_REGIONS = [
+    { id: 'cn-hangzhou', name: '华东1（杭州）' },
+    { id: 'cn-shanghai', name: '华东2（上海）' },
+    { id: 'cn-nanjing', name: '华东5（南京）' },
+    { id: 'cn-beijing', name: '华北2（北京）' },
+    { id: 'cn-qingdao', name: '华北1（青岛）' },
+    { id: 'cn-zhangjiakou', name: '华北3（张家口）' },
+    { id: 'cn-huhehaote', name: '华北5（呼和浩特）' },
+    { id: 'cn-wulanchabu', name: '华北6（乌兰察布）' },
+    { id: 'cn-shenzhen', name: '华南1（深圳）' },
+    { id: 'cn-heyuan', name: '华南2（河源）' },
+    { id: 'cn-guangzhou', name: '华南3（广州）' },
+    { id: 'cn-chengdu', name: '西南1（成都）' },
+    { id: 'cn-hongkong', name: '中国香港' },
+    { id: 'ap-southeast-1', name: '新加坡' },
+    { id: 'ap-southeast-2', name: '悉尼' },
+    { id: 'ap-southeast-3', name: '吉隆坡' },
+    { id: 'ap-southeast-5', name: '雅加达' },
+    { id: 'ap-southeast-6', name: '马尼拉' },
+    { id: 'ap-southeast-7', name: '泰国（曼谷）' },
+    { id: 'ap-northeast-1', name: '东京' },
+    { id: 'ap-northeast-2', name: '韩国（首尔）' },
+    { id: 'ap-south-1', name: '孟买' },
+    { id: 'us-east-1', name: '美国（弗吉尼亚）' },
+    { id: 'us-west-1', name: '美国（硅谷）' },
+    { id: 'eu-west-1', name: '英国（伦敦）' },
+    { id: 'eu-central-1', name: '德国（法兰克福）' },
+    { id: 'me-east-1', name: '阿联酋（迪拜）' },
+  ]
+  const [defaultRegions, setDefaultRegions] = useState([])
   // 顶部同步下拉菜单
   const [showTopDropdown, setShowTopDropdown] = useState(false)
   // 确认弹框
@@ -939,6 +1052,34 @@ function AccountManagement() {
   }, [])
 
   useEffect(() => { loadAutoSync() }, [loadAutoSync])
+
+  const loadDefaultRegions = useCallback(() => {
+    axios.get('/api/default-regions')
+      .then(res => setDefaultRegions(res.data.regions || []))
+      .catch(err => console.error('加载默认区域失败:', err))
+  }, [])
+
+  useEffect(() => { loadDefaultRegions() }, [loadDefaultRegions])
+
+  const handleToggleRegion = (regionId) => {
+    const isChecked = defaultRegions.includes(regionId)
+    let updatedRegions
+    if (isChecked) {
+      if (defaultRegions.length <= 1) {
+        toast.warning('至少需要保留一个区域')
+        return
+      }
+      updatedRegions = defaultRegions.filter(r => r !== regionId)
+    } else {
+      updatedRegions = [...defaultRegions, regionId]
+    }
+    axios.post('/api/default-regions', { regions: updatedRegions })
+      .then(res => {
+        setDefaultRegions(updatedRegions)
+        toast.success(res.data.message)
+      })
+      .catch(err => toast.error('更新失败: ' + (err.response?.data?.error || err.message)))
+  }
 
   const handleAddAccount = () => {
     setFormData({ name: '', access_key_id: '', access_key_secret: '', remark: '' })
@@ -1106,60 +1247,21 @@ function AccountManagement() {
   return (
     <div className="page-content">
       <div className="page-header">
-        <h2>账号管理</h2>
-        <div className="header-actions">
-          <div className="top-sync-dropdown-wrap" style={{ position: 'relative', display: 'inline-flex' }}>
-            <button className="btn-primary" onClick={() => handleSyncAll('all')} disabled={loading}>
-              {loading ? '同步中..' : '同步全部'}
-            </button>
-            <button className="btn-primary btn-dropdown-toggle" disabled={loading} onClick={() => setShowTopDropdown(!showTopDropdown)}>▾</button>
-            {showTopDropdown && (
-              <div className="top-sync-dropdown">
-                <div onClick={() => { setShowTopDropdown(false); handleSyncAll('all') }}>同步全部</div>
-                <div onClick={() => { setShowTopDropdown(false); handleSyncAll('resources') }}>仅同步资源</div>
-                <div onClick={() => { setShowTopDropdown(false); handleSyncAll('bills') }}>仅同步账单（当月）</div>
-              </div>
-            )}
-          </div>
-          <button className="btn-success" onClick={handleAddAccount}>添加账号</button>
-        </div>
+        <h2>平台设置</h2>
       </div>
-
-      {/* 添加/编辑表单 */}
-      {showForm && (
-        <div className="section-block form-section">
-          <h3>{editingAccount ? '编辑账号' : '添加账号'}</h3>
-          <div className="form-grid">
-            <div className="form-item">
-              <label>账号名称 <span className="required">*</span></label>
-              <input type="text" value={formData.name} onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))} placeholder="请输入账号名称" />
-            </div>
-            <div className="form-item">
-              <label>AccessKey ID <span className="required">*</span></label>
-              <input type="text" value={formData.access_key_id} onChange={e => setFormData(prev => ({ ...prev, access_key_id: e.target.value }))} placeholder="LTAI..." />
-            </div>
-            <div className="form-item">
-              <label>AccessKey Secret {!editingAccount && <span className="required">*</span>}</label>
-              <input type="password" value={formData.access_key_secret} onChange={e => setFormData(prev => ({ ...prev, access_key_secret: e.target.value }))} placeholder={editingAccount ? '不修改请留空' : '请输入ccessKey Secret'} />
-            </div>
-            <div className="form-item">
-              <label>备注</label>
-              <input type="text" value={formData.remark} onChange={e => setFormData(prev => ({ ...prev, remark: e.target.value }))} placeholder="备注信息" />
-            </div>
-          </div>
-          <div className="form-actions">
-            <button className="btn-primary" onClick={handleSubmit}>确定</button>
-            <button className="btn-default" onClick={() => setShowForm(false)}>取消</button>
-          </div>
-        </div>
-      )}
 
       {/* 自动同步配置 */}
       <div className="section-block auto-sync-section">
-        <h3>自动同步</h3>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18, paddingBottom: 14, borderBottom: '1px solid #f1f5f9' }}>
+          <h3 style={{ margin: 0, padding: 0, border: 'none' }}>自动同步</h3>
+          <button className="btn-primary" onClick={() => handleSyncAll('all')} disabled={loading}>
+            {loading ? '同步中..' : '同步全部'}
+          </button>
+        </div>
         <div className="auto-sync-content">
           <div className="auto-sync-status">
-            <span className={`status-tag ${autoSync.enabled ? 'status-active' : 'status-inactive'}`}>
+            <span className={`status-tag ${autoSync.enabled ? 'status-active' : 'status-inactive'}`}
+              style={{ padding: '10px 16px', fontSize: 14, lineHeight: '1.5' }}>
               {autoSync.enabled ? '已启用' : '已禁用'}
             </span>
             <button
@@ -1170,30 +1272,7 @@ function AccountManagement() {
             </button>
           </div>
           <div className="auto-sync-interval">
-            <label>同步间隔：</label>
-            <div className="custom-dropdown" ref={intervalDropdownRef}>
-              <button
-                type="button"
-                className={`custom-dropdown-trigger ${!autoSync.enabled ? 'custom-dropdown-disabled' : ''}`}
-                onClick={() => autoSync.enabled && setIntervalDropdownOpen(!intervalDropdownOpen)}
-              >
-                {autoSync.interval_hours}小时
-                <span className="custom-dropdown-arrow">▾</span>
-              </button>
-              {intervalDropdownOpen && (
-                <div className="custom-dropdown-menu">
-                  {[1, 2, 4, 6, 12, 24].map(h => (
-                    <div
-                      key={h}
-                      className={`custom-dropdown-item ${autoSync.interval_hours === h ? 'active' : ''}`}
-                      onClick={() => { handleAutoSyncInterval(h); setIntervalDropdownOpen(false) }}
-                    >
-                      每{h}小时
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            <span style={{ color: '#64748b', fontSize: 14 }}>每个整点自动同步</span>
           </div>
           {autoSync.last_sync_at && (
             <div className="auto-sync-last">
@@ -1203,8 +1282,69 @@ function AccountManagement() {
         </div>
       </div>
 
+      {/* 默认区域配置 */}
+      <div className="section-block">
+        <h3>同步区域</h3>
+        <p style={{ color: '#666', fontSize: 13, marginBottom: 12 }}>勾选需要同步的区域，至少选择一个</p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '8px 16px' }}>
+          {ALL_REGIONS.map(region => (
+            <label key={region.id} style={{
+              display: 'flex', alignItems: 'center', gap: 8,
+              padding: '6px 10px', borderRadius: 6, cursor: 'pointer',
+              background: defaultRegions.includes(region.id) ? '#eef2ff' : 'transparent',
+              border: `1px solid ${defaultRegions.includes(region.id) ? '#c7d2fe' : '#e2e8f0'}`,
+              transition: 'all 0.15s'
+            }}>
+              <input
+                type="checkbox"
+                checked={defaultRegions.includes(region.id)}
+                onChange={() => handleToggleRegion(region.id)}
+                style={{ margin: 0, accentColor: '#6366f1', flexShrink: 0 }}
+              />
+              <span style={{ fontSize: 13, color: '#334155', whiteSpace: 'nowrap' }}>
+                {region.name}
+              </span>
+            </label>
+          ))}
+        </div>
+      </div>
+
       {/* 账号列表 */}
       <div className="section-block">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18, paddingBottom: 14, borderBottom: '1px solid #f1f5f9' }}>
+          <h3 style={{ margin: 0, padding: 0, border: 'none' }}>账号设置</h3>
+          <button className="btn-primary" onClick={handleAddAccount}>添加账号</button>
+        </div>
+
+        {/* 添加/编辑表单 */}
+        {showForm && (
+          <div className="section-block form-section" style={{ marginBottom: 20 }}>
+            <h3>{editingAccount ? '编辑账号' : '添加账号'}</h3>
+            <div className="form-grid">
+              <div className="form-item">
+                <label>账号名称 <span className="required">*</span></label>
+                <input type="text" value={formData.name} onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))} placeholder="请输入账号名称" />
+              </div>
+              <div className="form-item">
+                <label>AccessKey ID <span className="required">*</span></label>
+                <input type="text" value={formData.access_key_id} onChange={e => setFormData(prev => ({ ...prev, access_key_id: e.target.value }))} placeholder="LTAI..." />
+              </div>
+              <div className="form-item">
+                <label>AccessKey Secret {!editingAccount && <span className="required">*</span>}</label>
+                <input type="password" value={formData.access_key_secret} onChange={e => setFormData(prev => ({ ...prev, access_key_secret: e.target.value }))} placeholder={editingAccount ? '不修改请留空' : '请输入ccessKey Secret'} />
+              </div>
+              <div className="form-item">
+                <label>备注</label>
+                <input type="text" value={formData.remark} onChange={e => setFormData(prev => ({ ...prev, remark: e.target.value }))} placeholder="备注信息" />
+              </div>
+            </div>
+            <div className="form-actions">
+              <button className="btn-primary" onClick={handleSubmit}>确定</button>
+              <button className="btn-default" onClick={() => setShowForm(false)}>取消</button>
+            </div>
+          </div>
+        )}
+
         {accounts.length === 0 ? (
           <div className="empty-state">暂无账号，请点击"添加账号"添加阿里云AccessKey</div>
         ) : (
@@ -1229,17 +1369,11 @@ function AccountManagement() {
                     <td>{acct.remark || '-'}</td>
                     <td>{acct.last_sync_at || '从未同步'}</td>
                     <td className="td-actions">
-                      <div className="btn-group btn-group-sm">
-                        <button className="btn-link" onClick={() => handleSync(acct.id, 'all')} disabled={syncingIds[acct.id]}>
-                          {syncingIds[acct.id] ? '同步中..' : '同步'}
-                        </button>
-                        <button className="btn-link btn-dropdown-toggle-sm" disabled={syncingIds[acct.id]}>▾</button>
-                        <div className="btn-dropdown-menu">
-                          <div onClick={() => handleSync(acct.id, 'all')}>同步全部</div>
-                          <div onClick={() => handleSync(acct.id, 'resources')}>仅同步资源</div>
-                          <div onClick={() => handleSync(acct.id, 'bills')}>仅同步账单</div>
-                        </div>
-                      </div>
+                      <button className="btn-link" onClick={() => handleSync(acct.id, 'all')} disabled={syncingIds[acct.id]}>
+                        {syncingIds[acct.id] ? '同步中..' : '同步全部'}
+                      </button>
+                      <button className="btn-link" onClick={() => handleSync(acct.id, 'resources')} disabled={syncingIds[acct.id]}>同步资源</button>
+                      <button className="btn-link" onClick={() => handleSync(acct.id, 'bills')} disabled={syncingIds[acct.id]}>同步账单</button>
                       <button className="btn-link" onClick={() => handleEditAccount(acct)}>编辑</button>
                       <button className="btn-link btn-danger-link" onClick={() => handleDelete(acct)}>删除</button>
                     </td>
@@ -1406,13 +1540,17 @@ function RamManagement() {
       .catch(err => toast.error('加载策略列表失败: ' + (err.response?.data?.error || err.message)))
   }
 
-  // 根据搜索关键词过滤策略列表
-  const filteredPolicies = policyKeyword.trim()
+  // 禁止添加的危险权限列表
+  const BLOCKED_POLICIES = ['AdministratorAccess']
+
+  // 根据搜索关键词过滤策略列表（过滤掉禁止添加的权限）
+  const filteredPolicies = (policyKeyword.trim()
     ? allPolicies.filter(p =>
         p.policy_name.toLowerCase().includes(policyKeyword.toLowerCase()) ||
         (p.description && p.description.toLowerCase().includes(policyKeyword.toLowerCase()))
       )
     : allPolicies
+  ).filter(p => !BLOCKED_POLICIES.includes(p.policy_name))
 
   const handleSelectUser = (userName, accountId) => {
     if (selectedUser === userName) {
@@ -1429,6 +1567,10 @@ function RamManagement() {
   const handleAttachPolicy = () => {
     if (!selectedPolicy) {
       toast.warning('请选择策略')
+      return
+    }
+    if (BLOCKED_POLICIES.includes(selectedPolicy)) {
+      toast.error(`禁止添加 ${selectedPolicy} 权限，该权限风险过高`)
       return
     }
     const acctId = currentUserAccountId || selectedAccount
@@ -1517,11 +1659,6 @@ function RamManagement() {
     <div className="page-content">
       <div className="page-header">
         <h2>RAM 用户管理</h2>
-        <div className="header-actions">
-          <button className="btn-success" onClick={() => setShowCreateForm(!showCreateForm)}>
-            {showCreateForm ? '取消' : '创建用户'}
-          </button>
-        </div>
       </div>
 
       {/* 搜索框*/}
@@ -1543,6 +1680,9 @@ function RamManagement() {
           {loading ? '查询中..' : '搜索'}
         </button>
         <button className="btn-default" onClick={() => { setSelectedAccount('all'); setUserKeyword(''); setSelectedUser(null); setUserPolicies([]) }}>重置</button>
+        <button className="btn-primary" onClick={() => setShowCreateForm(!showCreateForm)}>
+          {showCreateForm ? '取消' : '创建用户'}
+        </button>
       </div>
 
       {/* 创建用户表单 */}
@@ -2003,11 +2143,10 @@ function DnsManagement() {
       <div className="section-block">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 10 }}>
           <h3 style={{ margin: 0 }}>域名列表（{domains.length}个）{filteredDomains.length !== domains.length ? ` 筛选中：${filteredDomains.length} 条` : ''}</h3>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div className="search-bar" style={{ margin: 0, padding: 0, background: 'transparent', border: 'none', boxShadow: 'none', backdropFilter: 'none' }}>
             <select
               value={selectedAccount}
               onChange={e => { setSelectedAccount(e.target.value); setSelectedDomain(''); setDomains([]); setRecords([]) }}
-              style={{ padding: '10px 14px', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 14, background: 'rgba(255,255,255,0.9)', boxSizing: 'border-box' }}
             >
               <option value="all">全部账号</option>
               {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
@@ -2017,14 +2156,14 @@ function DnsManagement() {
               placeholder="搜索域名..."
               value={domainKeyword}
               onChange={e => setDomainKeyword(e.target.value)}
-              style={{ padding: '10px 14px', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 14, width: 180, boxSizing: 'border-box' }}
+              style={{ width: 180 }}
             />
             <input
               type="text"
               placeholder="搜索持有者..."
               value={holderKeyword}
               onChange={e => setHolderKeyword(e.target.value)}
-              style={{ padding: '10px 14px', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 14, width: 180, boxSizing: 'border-box' }}
+              style={{ width: 180 }}
             />
             <button className="btn-primary" onClick={() => {}}>搜索</button>
             <button className="btn-default" onClick={() => { setSelectedAccount('all'); setDomainKeyword(''); setHolderKeyword(''); setSelectedDomain(''); setDomains([]); setRecords([]) }}>重置</button>
@@ -2089,7 +2228,7 @@ function DnsManagement() {
               />
               <button className="btn-primary" onClick={() => { setRecordPage(1); loadRecords(1) }}>搜索</button>
               <button className="btn-default" onClick={() => { setRecordKeyword(''); setRecordPage(1); setTimeout(() => loadRecords(1), 0) }}>重置</button>
-              <button className="btn-success" onClick={() => setShowAddForm(!showAddForm)}>
+              <button className="btn-primary" onClick={() => setShowAddForm(!showAddForm)}>
                 {showAddForm ? '取消' : '添加记录'}
               </button>
             </div>
@@ -2209,7 +2348,7 @@ function DnsManagement() {
       {editRecord && (
         <div className="modal-overlay" onClick={() => setEditRecord(null)}>
           <div className="modal-box" onClick={e => e.stopPropagation()}>
-            <div className="modal-icon">鉁忥笍</div>
+            <div className="modal-icon">✏️</div>
             <p className="modal-msg">编辑解析记录</p>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
               <div className="form-item" style={{ margin: 0 }}>
@@ -2412,26 +2551,26 @@ function SslManagement() {
         <h2>SSL 证书管理</h2>
       </div>
 
-      {/* 搜索框*/}
-      <div className="search-bar">
-        <select value={selectedAccount} onChange={e => setSelectedAccount(e.target.value)}>
-          <option value="all">全部账号</option>
-          {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-        </select>
-        <input
-          type="text"
-          placeholder="搜索证书名称、域名、品牌..."
-          value={certKeyword}
-          onChange={e => setCertKeyword(e.target.value)}
-        />
-        <button className="btn-primary" onClick={loadCerts} disabled={loading}>
-          {loading ? '查询中..' : '搜索'}
-        </button>
-        <button className="btn-default" onClick={() => { setSelectedAccount('all'); setCertKeyword(''); setSortKey(''); setSortDir('asc') }}>重置</button>
-      </div>
-
       <div className="section-block">
-        <h3>证书列表（{sortedCerts.length} 个）</h3>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18, paddingBottom: 14, borderBottom: '1px solid #f1f5f9' }}>
+          <h3 style={{ margin: 0, padding: 0, border: 'none' }}>证书列表（{sortedCerts.length} 个）</h3>
+          <div className="search-bar" style={{ margin: 0, padding: 0, gap: 8, background: 'transparent', border: 'none', boxShadow: 'none', backdropFilter: 'none' }}>
+            <select value={selectedAccount} onChange={e => setSelectedAccount(e.target.value)}>
+              <option value="all">全部账号</option>
+              {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select>
+            <input
+              type="text"
+              placeholder="搜索证书名称、域名、品牌..."
+              value={certKeyword}
+              onChange={e => setCertKeyword(e.target.value)}
+            />
+            <button className="btn-primary" onClick={loadCerts} disabled={loading}>
+              {loading ? '查询中..' : '搜索'}
+            </button>
+            <button className="btn-default" onClick={() => { setSelectedAccount('all'); setCertKeyword(''); setSortKey(''); setSortDir('asc') }}>重置</button>
+          </div>
+        </div>
         {loading ? (
           <div className="empty-state">加载中..</div>
         ) : sortedCerts.length === 0 ? (
@@ -2924,17 +3063,14 @@ function LogManagement() {
 
       {/* 搜索框 */}
       <div className="search-bar" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
-        <label>账号：</label>
         <select value={accountId} onChange={e => setAccountId(e.target.value)}>
           <option value="">全部账号</option>
           {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
         </select>
-        <label>模块：</label>
         <select value={module} onChange={e => setModule(e.target.value)}>
           <option value="">全部模块</option>
           {modules.map(m => <option key={m} value={m}>{m}</option>)}
         </select>
-        <label>时间：</label>
         <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
         <span style={{ color: '#94a3b8' }}>至</span>
         <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} />
@@ -3015,7 +3151,7 @@ const PAGE_LABELS = {
   overview: '资源概览',
   resources: '资源管理',
   bills: '账单管理',
-  accounts: '账号管理',
+  accounts: '平台设置',
   ram: 'RAM 管理',
   dns: '域名管理',
   ssl: 'SSL 证书',
@@ -3040,13 +3176,6 @@ function App() {
   const setActiveMenu = (page) => {
     navigate('/' + page)
   }
-
-  // 默认跳转到 /overview
-  useEffect(() => {
-    if (location.pathname === '/') {
-      navigate('/overview', { replace: true })
-    }
-  }, [])
 
   const renderPage = () => {
     switch (activeMenu) {

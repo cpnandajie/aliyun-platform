@@ -248,6 +248,25 @@ def init_db():
     cursor.execute('INSERT OR IGNORE INTO auto_sync_config (id, enabled, interval_hours) VALUES (1, 0, 6)')
     conn.commit()
     conn.close()
+    # 创建默认区域表
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS default_regions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            region_id TEXT NOT NULL UNIQUE,
+            sort_order INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    # 插入默认区域（仅在表为空时）
+    cursor.execute('SELECT COUNT(*) FROM default_regions')
+    if cursor.fetchone()[0] == 0:
+        default_regions_list = ['cn-hangzhou', 'cn-shanghai', 'cn-beijing', 'cn-chengdu', 'ap-southeast-1']
+        for i, region in enumerate(default_regions_list):
+            cursor.execute('INSERT INTO default_regions (region_id, sort_order) VALUES (?, ?)', (region, i))
+    conn.commit()
+    conn.close()
     # 创建操作日志表
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -433,7 +452,7 @@ def sync_ecs(account_id, access_key_id, access_key_secret):
         from alibabacloud_tea_openapi import models as open_api_models
 
         total_synced = 0
-        for region_id in DEFAULT_REGIONS:
+        for region_id in get_default_regions():
             try:
                 config = open_api_models.Config(
                     access_key_id=access_key_id,
@@ -525,7 +544,7 @@ def sync_rds(account_id, access_key_id, access_key_secret):
         from alibabacloud_tea_openapi import models as open_api_models
 
         total_synced = 0
-        for region_id in DEFAULT_REGIONS:
+        for region_id in get_default_regions():
             try:
                 config = open_api_models.Config(
                     access_key_id=access_key_id,
@@ -618,7 +637,7 @@ def sync_slb(account_id, access_key_id, access_key_secret):
         from alibabacloud_tea_openapi import models as open_api_models
 
         total_synced = 0
-        for region_id in DEFAULT_REGIONS:
+        for region_id in get_default_regions():
             try:
                 config = open_api_models.Config(
                     access_key_id=access_key_id,
@@ -729,7 +748,7 @@ def sync_redis(account_id, access_key_id, access_key_secret):
         from alibabacloud_tea_openapi import models as open_api_models
 
         total_synced = 0
-        for region_id in DEFAULT_REGIONS:
+        for region_id in get_default_regions():
             try:
                 config = open_api_models.Config(
                     access_key_id=access_key_id,
@@ -751,7 +770,7 @@ def sync_redis(account_id, access_key_id, access_key_secret):
                         break
                     # 兼容不同SDK版本的字段名
                     instances = getattr(resp.body.instances, 'kvstore_instance', None) or getattr(resp.body.instances, 'kvstoreinstance', None) or []
-                    if page_number == 1 and region_id == DEFAULT_REGIONS[0]:
+                    if page_number == 1 and region_id == get_default_regions()[0]:
                         inst_attrs = [a for a in dir(resp.body.instances) if not a.startswith('_') and 'instance' in a.lower()]
                         app.logger.info(f"Redis instances属性: {inst_attrs}")
 
@@ -2143,6 +2162,8 @@ def ram_list_policies(account_id):
 @app.route('/api/accounts/<int:account_id>/ram/users/<user_name>/policies', methods=['POST'])
 def ram_attach_policy(account_id, user_name):
     """为 RAM 用户添加权限策略"""
+    # 禁止添加的高危权限
+    BLOCKED_POLICIES = ['AdministratorAccess']
     client, err = _get_ram_client(account_id)
     if err:
         return jsonify({'success': False, 'error': err}), 400
@@ -2151,6 +2172,8 @@ def ram_attach_policy(account_id, user_name):
     policy_type = (data.get('policy_type') or 'System').strip()
     if not policy_name:
         return jsonify({'success': False, 'error': '策略名称不能为空'}), 400
+    if policy_name in BLOCKED_POLICIES:
+        return jsonify({'success': False, 'error': f'禁止添加 {policy_name} 权限，该权限风险过高'}), 403
     try:
         from alibabacloud_ram20150501 import models as ram_models
         req = ram_models.AttachPolicyToUserRequest(
@@ -2888,16 +2911,16 @@ def update_scheduler():
         if scheduler.get_job(_sync_job_id):
             scheduler.remove_job(_sync_job_id)
 
-        # 如果启用，添加新job
+        # 如果启用，添加新job（每个整点同步）
         if enabled:
             scheduler.add_job(
                 auto_sync_all_accounts,
-                'interval',
-                hours=interval_hours,
+                'cron',
+                minute=0,
                 id=_sync_job_id,
                 replace_existing=True
             )
-            app.logger.info(f"[定期同步] 已启用，间隔 {interval_hours} 小时")
+            app.logger.info("[定期同步] 已启用，每个整点同步")
         else:
             app.logger.info("[定期同步] 已禁用")
 
@@ -2941,6 +2964,48 @@ def api_update_auto_sync():
     msg = f'定期同步已启用，间隔 {interval_hours} 小时' if enabled else '定期同步已禁用'
     log_operation('系统设置', '更新定期同步', msg)
     return jsonify({'success': True, 'message': msg})
+
+
+# ---------- 默认区域管理 ----------
+
+def get_default_regions():
+    """获取默认区域列表"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT region_id FROM default_regions ORDER BY sort_order, id')
+    regions = [row['region_id'] for row in cursor.fetchall()]
+    conn.close()
+    return regions if regions else ['cn-hangzhou', 'cn-shanghai', 'cn-beijing', 'cn-chengdu', 'ap-southeast-1']
+
+
+@app.route('/api/default-regions', methods=['GET'])
+def api_get_default_regions():
+    """获取默认区域列表"""
+    regions = get_default_regions()
+    return jsonify({'regions': regions})
+
+
+@app.route('/api/default-regions', methods=['POST'])
+def api_update_default_regions():
+    """更新默认区域列表"""
+    data = request.get_json()
+    regions = data.get('regions', [])
+    
+    if not regions:
+        return jsonify({'error': '至少需要一个区域'}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    # 清空现有区域
+    cursor.execute('DELETE FROM default_regions')
+    # 插入新区域
+    for i, region in enumerate(regions):
+        cursor.execute('INSERT INTO default_regions (region_id, sort_order) VALUES (?, ?)', (region.strip(), i))
+    conn.commit()
+    conn.close()
+
+    log_operation('系统设置', '更新默认区域', f'已更新为: {', '.join(regions)}')
+    return jsonify({'success': True, 'message': f'默认区域已更新，共 {len(regions)} 个区域'})
 
 
 # ---------- 操作日志 ----------

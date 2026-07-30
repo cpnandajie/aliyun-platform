@@ -90,7 +90,7 @@ body {
   background: linear-gradient(180deg, #818cf8, #6366f1);
   border-radius: 0 3px 3px 0;
   transform: scaleY(0);
-  transition: transform 0.25s ease;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .sidebar-menu-item:hover {
@@ -182,6 +182,7 @@ body {
   margin-bottom: 24px;
   position: relative;
   z-index: 10;
+  overflow: visible;
 }
 
 .page-header h2 {
@@ -212,11 +213,11 @@ body {
   text-align: center;
   box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.03);
   border: 1px solid rgba(255,255,255,0.8);
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s ease;
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .summary-card:hover {
-  transform: translateY(-4px);
+  transform: translateY(-2px);
   box-shadow: 0 8px 24px rgba(0,0,0,0.08), 0 2px 6px rgba(0,0,0,0.04);
 }
 
@@ -317,7 +318,6 @@ body {
   border-bottom: 1px solid #e2e8f0;
   white-space: nowrap;
   font-size: 13px;
-  text-transform: uppercase;
   letter-spacing: 0.3px;
 }
 
@@ -325,7 +325,7 @@ body {
 .data-table th.sortable {
   cursor: pointer;
   user-select: none;
-  transition: all 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .data-table th.sortable:hover {
@@ -351,7 +351,7 @@ body {
 }
 
 .data-table tbody tr {
-  transition: background 0.15s ease;
+  transition: background 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .data-table tbody tr:nth-child(even) {
@@ -399,13 +399,13 @@ body {
 .inner-table th {
   background: linear-gradient(180deg, #f8fafc, #f1f5f9);
   font-size: 13px;
-  padding: 10px 14px;
+  padding: 14px 18px;
   color: #475569;
 }
 
 .inner-table td {
-  font-size: 13px;
-  padding: 10px 14px;
+  font-size: 14px;
+  padding: 14px 18px;
 }
 
 /* 状态标签 */
@@ -489,7 +489,7 @@ body {
   backdrop-filter: blur(8px);
   border-radius: 12px;
   border: 1px solid rgba(255,255,255,0.8);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.03);
 }
 
 .search-bar label {
@@ -507,7 +507,7 @@ body {
   border-radius: 8px;
   font-size: 14px;
   outline: none;
-  transition: all 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   background: rgba(255,255,255,0.9);
   color: #334155;
   height: 42px;
@@ -523,7 +523,7 @@ body {
 .search-bar input[type="date"]::-webkit-calendar-picker-indicator {
   cursor: pointer;
   opacity: 0.6;
-  transition: opacity 0.2s ease;
+  transition: opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .search-bar input[type="date"]::-webkit-calendar-picker-indicator:hover {
@@ -581,7 +581,7 @@ body {
   border-radius: 8px;
   font-size: 14px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   backdrop-filter: blur(4px);
 }
 
@@ -599,7 +599,7 @@ body {
   border-radius: 8px;
   font-size: 14px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .btn-refresh:hover:not(:disabled) {
@@ -614,7 +614,7 @@ body {
   cursor: pointer;
   font-size: 14px;
   padding: 4px 8px;
-  transition: color 0.2s;
+  transition: color 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   border-radius: 4px;
 }
 
@@ -654,7 +654,6 @@ button:disabled {
   box-shadow: 0 8px 30px rgba(0,0,0,0.12);
   z-index: 200;
   margin-top: 4px;
-  overflow: hidden;
 }
 
 .top-sync-dropdown div {
@@ -663,7 +662,7 @@ button:disabled {
   font-size: 14px;
   color: #334155;
   white-space: nowrap;
-  transition: all 0.15s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .top-sync-dropdown div:hover {
@@ -739,8 +738,7 @@ button:disabled {
   border-radius: 10px;
   box-shadow: 0 8px 30px rgba(0,0,0,0.12);
   z-index: 100;
-  margin-top: 4px;
-  overflow: hidden;
+  padding: 4px 0;
 }
 
 .btn-dropdown-menu div {
@@ -749,7 +747,7 @@ button:disabled {
   font-size: 14px;
   color: #334155;
   white-space: nowrap;
-  transition: all 0.15s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .btn-dropdown-menu div:hover {
@@ -757,12 +755,10 @@ button:disabled {
   color: #6366f1;
 }
 
-/* 表格内的小按钮组下拉菜单向上弹出，避免被 overflow 裁切 */
+/* 表格内的小按钮组下拉菜单 */
 .btn-group-sm .btn-dropdown-menu {
-  top: auto;
-  bottom: 100%;
-  margin-top: 0;
-  margin-bottom: 4px;
+  top: 100%;
+  bottom: auto;
   right: 0;
   left: auto;
 }
@@ -800,7 +796,7 @@ button:disabled {
   border-radius: 8px;
   font-size: 14px;
   outline: none;
-  transition: all 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   background: rgba(255,255,255,0.9);
 }
 
@@ -926,7 +922,7 @@ button:disabled {
   background: rgba(255,255,255,0.9);
   color: #334155;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   min-width: 100px;
   height: 42px;
   box-sizing: border-box;
@@ -1407,7 +1403,7 @@ button:disabled {
   border-radius: 8px;
   font-size: 14px;
   outline: none;
-  transition: all 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   min-width: 160px;
   background: rgba(255,255,255,0.9);
 }
@@ -1431,7 +1427,7 @@ button:disabled {
   border-radius: 8px;
   font-size: 14px;
   outline: none;
-  transition: all 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   background: rgba(255,255,255,0.9);
 }
 
@@ -1446,7 +1442,7 @@ button:disabled {
   border-radius: 8px;
   font-size: 14px;
   outline: none;
-  transition: all 0.2s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
   background: rgba(255,255,255,0.9);
 }
 
@@ -1485,7 +1481,7 @@ button:disabled {
   padding: 10px 14px;
   cursor: pointer;
   border-bottom: 1px solid #f1f5f9;
-  transition: all 0.15s ease;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .ram-policy-option:last-child {
@@ -1665,3 +1661,57 @@ button:disabled {
   background: rgba(254,226,226,0.6) !important;
 }
 
+/* ==================== 骨架屏 ==================== */
+@keyframes skeletonShimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+  background-size: 200% 100%;
+  animation: skeletonShimmer 1.5s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+.skeleton-card {
+  height: 90px;
+  border-radius: 14px;
+}
+
+.skeleton-line {
+  height: 16px;
+  margin-bottom: 10px;
+}
+
+.skeleton-line-sm {
+  height: 12px;
+  width: 60%;
+}
+
+.skeleton-table-row {
+  display: flex;
+  gap: 18px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.skeleton-table-cell {
+  height: 14px;
+  flex: 1;
+}
+
+.skeleton-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.skeleton-section {
+  background: rgba(255,255,255,0.85);
+  border-radius: 14px;
+  padding: 24px;
+  margin-bottom: 24px;
+  border: 1px solid rgba(255,255,255,0.8);
+}
