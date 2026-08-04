@@ -125,6 +125,7 @@ def init_db():
             region_id TEXT,
             created_time TEXT,
             expired_time TEXT,
+            renewal_price REAL,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (account_id) REFERENCES accounts(id)
         )
@@ -146,6 +147,7 @@ def init_db():
             connection_mode TEXT,
             created_time TEXT,
             expired_time TEXT,
+            renewal_price REAL,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (account_id) REFERENCES accounts(id)
         )
@@ -197,6 +199,7 @@ def init_db():
             port INTEGER,
             created_time TEXT,
             expired_time TEXT,
+            renewal_price REAL,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (account_id) REFERENCES accounts(id)
         )
@@ -302,6 +305,19 @@ def init_db():
         conn.close()
     except Exception:
         pass
+    # 检查ecs/rds/redis表有renewal_price列
+    for table in ['ecs_instances', 'rds_instances', 'redis_instances']:
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute(f"PRAGMA table_info({table})")
+            columns = [col[1] for col in cursor.fetchall()]
+            if 'renewal_price' not in columns:
+                cursor.execute(f'ALTER TABLE {table} ADD COLUMN renewal_price REAL')
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
 
 init_db()
 
@@ -1008,6 +1024,59 @@ def sync_balance(account_id, access_key_id, access_key_secret):
         return False
 
 
+def sync_renewal_prices(account_id, access_key_id, access_key_secret):
+    """同步续费价格（ECS、RDS、Redis）"""
+    from concurrent.futures import ThreadPoolExecutor
+    
+    # ECS续费价格
+    ecs_instances = query_db('SELECT instance_id, region_id FROM ecs_instances WHERE account_id = ?', (account_id,))
+    if ecs_instances:
+        def query_ecs_price(inst):
+            try:
+                price = _query_ecs_renewal_price(access_key_id, access_key_secret, inst['instance_id'], inst['region_id'])
+                if price is not None:
+                    execute_db('UPDATE ecs_instances SET renewal_price = ? WHERE instance_id = ? AND account_id = ?',
+                              (price, inst['instance_id'], account_id))
+            except Exception as e:
+                app.logger.warning(f"ECS续费价格查询失败 {inst['instance_id']}: {str(e)}")
+        
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            executor.map(query_ecs_price, ecs_instances)
+        app.logger.info(f"ECS续费价格同步完成: {len(ecs_instances)}个实例")
+    
+    # RDS续费价格
+    rds_instances = query_db('SELECT instance_id, region_id FROM rds_instances WHERE account_id = ?', (account_id,))
+    if rds_instances:
+        def query_rds_price(inst):
+            try:
+                price = _query_rds_renewal_price(access_key_id, access_key_secret, inst['instance_id'], inst['region_id'])
+                if price is not None:
+                    execute_db('UPDATE rds_instances SET renewal_price = ? WHERE instance_id = ? AND account_id = ?',
+                              (price, inst['instance_id'], account_id))
+            except Exception as e:
+                app.logger.warning(f"RDS续费价格查询失败 {inst['instance_id']}: {str(e)}")
+        
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            executor.map(query_rds_price, rds_instances)
+        app.logger.info(f"RDS续费价格同步完成: {len(rds_instances)}个实例")
+    
+    # Redis续费价格
+    redis_instances = query_db('SELECT instance_id, region_id FROM redis_instances WHERE account_id = ?', (account_id,))
+    if redis_instances:
+        def query_redis_price(inst):
+            try:
+                price = _query_redis_renewal_price(access_key_id, access_key_secret, inst['instance_id'], inst['region_id'])
+                if price is not None:
+                    execute_db('UPDATE redis_instances SET renewal_price = ? WHERE instance_id = ? AND account_id = ?',
+                              (price, inst['instance_id'], account_id))
+            except Exception as e:
+                app.logger.warning(f"Redis续费价格查询失败 {inst['instance_id']}: {str(e)}")
+        
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            executor.map(query_redis_price, redis_instances)
+        app.logger.info(f"Redis续费价格同步完成: {len(redis_instances)}个实例")
+
+
 def do_sync_account(account_id, sync_type='all'):
     """同步单个账号数据
     sync_type: 'all' = 全部, 'resources' = 仅资源, 'bills' = 仅账单
@@ -1084,6 +1153,12 @@ def do_sync_account(account_id, sync_type='all'):
                 results['redis'] = 0
                 errors.append(f'Redis: {str(e)}')
                 print(f"[ERROR] 同步Redis异常: {str(e)}")
+
+            # 同步续费价格
+            try:
+                sync_renewal_prices(account_id, ak, sk)
+            except Exception as e:
+                print(f"[WARN] 同步续费价格失败: {str(e)}")
 
         # ===== 账单同步（仅当月）=====
         if sync_bills:
@@ -1785,6 +1860,100 @@ def api_get_redis():
     return jsonify(instances)
 
 
+# ---------- 续费价格查询 ----------
+
+def _query_ecs_renewal_price(access_key_id, access_key_secret, instance_id, region_id):
+    """查询单个ECS实例续费价格（1个月）"""
+    try:
+        from alibabacloud_ecs20140526.client import Client as EcsClient
+        from alibabacloud_ecs20140526 import models as ecs_models
+        from alibabacloud_tea_openapi import models as open_api_models
+
+        config = open_api_models.Config(
+            access_key_id=access_key_id,
+            access_key_secret=access_key_secret
+        )
+        config.endpoint = 'ecs.aliyuncs.com'
+        client = EcsClient(config)
+
+        req = ecs_models.DescribeRenewalPriceRequest(
+            region_id=region_id,
+            resource_id=instance_id,
+            period=1,
+            price_unit='Month'
+        )
+        resp = client.describe_renewal_price(req)
+        if resp.body and resp.body.price_info and resp.body.price_info.price:
+            return resp.body.price_info.price.trade_price
+        return None
+    except Exception as e:
+        app.logger.warning(f"查询ECS {instance_id} 续费价格失败: {str(e)}")
+        return None
+
+
+def _query_rds_renewal_price(access_key_id, access_key_secret, instance_id, region_id):
+    """查询单个RDS实例续费价格（1个月）"""
+    try:
+        from alibabacloud_rds20140815.client import Client as RdsClient
+        from alibabacloud_rds20140815 import models as rds_models
+        from alibabacloud_tea_openapi import models as open_api_models
+
+        config = open_api_models.Config(
+            access_key_id=access_key_id,
+            access_key_secret=access_key_secret
+        )
+        config.endpoint = 'rds.aliyuncs.com'
+        client = RdsClient(config)
+
+        # RDS使用DescribePrice API，order_type='RENEW'
+        req = rds_models.DescribePriceRequest(
+            region_id=region_id,
+            dbinstance_id=instance_id,
+            order_type='RENEW',
+            time_type='Month',
+            used_time=1,
+            quantity=1
+        )
+        resp = client.describe_price(req)
+        if resp.body and resp.body.price_info:
+            return resp.body.price_info.trade_price
+        return None
+    except Exception as e:
+        app.logger.warning(f"查询RDS {instance_id} 续费价格失败: {str(e)}")
+        return None
+
+
+def _query_redis_renewal_price(access_key_id, access_key_secret, instance_id, region_id):
+    """查询单个Redis实例续费价格（1个月）"""
+    try:
+        from alibabacloud_r_kvstore20150101.client import Client as KvstoreClient
+        from alibabacloud_r_kvstore20150101 import models as kvstore_models
+        from alibabacloud_tea_openapi import models as open_api_models
+
+        config = open_api_models.Config(
+            access_key_id=access_key_id,
+            access_key_secret=access_key_secret
+        )
+        config.endpoint = 'r-kvstore.aliyuncs.com'
+        client = KvstoreClient(config)
+
+        req = kvstore_models.DescribePriceRequest(
+            region_id=region_id,
+            instance_type='Redis',
+            order_type='RENEW',
+            instance_id=instance_id,
+            period=1,
+            price_unit='Month'
+        )
+        resp = client.describe_price(req)
+        if resp.body and resp.body.price_info and resp.body.price_info.price:
+            return resp.body.price_info.price.trade_price
+        return None
+    except Exception as e:
+        app.logger.warning(f"查询Redis {instance_id} 续费价格失败: {str(e)}")
+        return None
+
+
 # ---------- 区域列表 ----------
 
 @app.route('/api/regions', methods=['GET'])
@@ -2104,6 +2273,7 @@ def ram_list_user_policies(account_id, user_name):
                     'policy_name': p.policy_name,
                     'policy_type': p.policy_type,
                     'description': getattr(p, 'description', '') or '',
+                    'attachment_date': '',  # SDK不支持获取授权时间
                 })
         return jsonify({'success': True, 'policies': policies})
     except Exception as e:

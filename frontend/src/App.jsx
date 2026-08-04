@@ -364,7 +364,7 @@ function ResourceManagement() {
   // 各Tab的列定义（sortable标记可排序列）
   const tabColumns = {
     ecs: [
-      { key: 'account_name', label: '账号', sortable: true },
+      { key: 'account_name', label: '账号', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span> },
       { key: 'instance_id', label: '实例ID', sortable: true },
       { key: 'instance_name', label: '实例名称', sortable: true },
       { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{STATUS_LABELS[v] || v}</span> },
@@ -373,45 +373,60 @@ function ResourceManagement() {
       { key: 'memory_gb', label: '内存(GB)', sortable: true },
       { key: 'private_ip', label: '内网IP' },
       { key: 'public_ip', label: '公网IP' },
-      { key: 'region_id', label: '区域', sortable: true, render: v => REGION_LABELS[v] || v },
+      { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
+      { key: 'renewal_price', label: '月续费', sortable: true, render: (v, row) => {
+        if (v !== null && v !== undefined) return <span style={{ color: '#e67e22', fontWeight: 500 }}>¥{fmtMoney(v)}</span>
+        return <span style={{ color: '#94a3b8' }}>-</span>
+      }},
     ],
     rds: [
-      { key: 'account_name', label: '账号', sortable: true },
+      { key: 'account_name', label: '账号', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span> },
       { key: 'instance_id', label: '实例ID', sortable: true },
       { key: 'instance_name', label: '实例名称', sortable: true },
       { key: 'engine', label: '引擎', sortable: true },
       { key: 'engine_version', label: '版本', sortable: true },
-      { key: 'instance_type', label: '规格', sortable: true },
+      { key: 'instance_type', label: '类型', sortable: true, render: v => ({ Primary: '主实例', Readonly: '只读实例', Guard: '灾备实例', Temp: '临时实例' }[v] || v) },
       { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{STATUS_LABELS[v] || v}</span> },
-      { key: 'region_id', label: '区域', sortable: true, render: v => REGION_LABELS[v] || v },
+      { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
+      { key: 'renewal_price', label: '月续费', sortable: true, render: (v, row) => {
+        if (v !== null && v !== undefined) return <span style={{ color: '#e67e22', fontWeight: 500 }}>¥{fmtMoney(v)}</span>
+        return <span style={{ color: '#94a3b8' }}>-</span>
+      }},
     ],
     slb: [
-      { key: 'account_name', label: '账号', sortable: true },
+      { key: 'account_name', label: '账号', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span> },
       { key: 'instance_id', label: '实例ID', sortable: true },
       { key: 'instance_name', label: '实例名称', sortable: true },
       { key: 'address', label: '地址', className: 'td-mono' },
-      { key: 'address_type', label: '地址类型', sortable: true },
-      { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{STATUS_LABELS[v] || v}</span> },
-      { key: 'network_type', label: '网络类型', sortable: true },
-      { key: 'region_id', label: '区域', sortable: true, render: v => REGION_LABELS[v] || v },
+      { key: 'address_type', label: '地址类型', sortable: true, render: v => ({ internet: '公网', intranet: '内网' }[v] || v) },
+      { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{({ active: '运行中', inactive: '已停止', locked: '已锁定' }[v] || STATUS_LABELS[v] || v)}</span> },
+      { key: 'network_type', label: '网络类型', sortable: true, render: v => ({ vpc: 'VPC', classic: '经典网络' }[v] || v) },
+      { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
     ],
     oss: [
-      { key: 'account_name', label: '账号', sortable: true },
+      { key: 'account_name', label: '账号', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span> },
       { key: 'bucket_name', label: 'Bucket名称', sortable: true, className: 'td-mono' },
-      { key: 'location', label: '区域', sortable: true },
-      { key: 'storage_class', label: '存储类型', sortable: true },
+      { key: 'location', label: '区域', sortable: true, render: v => {
+        const regionId = v?.replace(/^oss-/, '') || v
+        return <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[regionId] || regionId}</span>
+      }},
+      { key: 'storage_class', label: '存储类型', sortable: true, render: v => ({ Standard: '标准存储', IA: '低频访问', Archive: '归档存储', ColdArchive: '冷归档' }[v] || v) },
       { key: 'creation_date', label: '创建时间', sortable: true, render: v => fmtDate(v) },
     ],
     redis: [
-      { key: 'account_name', label: '账号', sortable: true },
+      { key: 'account_name', label: '账号', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span> },
       { key: 'instance_id', label: '实例ID', sortable: true },
       { key: 'instance_name', label: '实例名称', sortable: true },
-      { key: 'architecture_type', label: '架构', sortable: true },
+      { key: 'architecture_type', label: '架构', sortable: true, render: v => ({ standard: '标准版', cluster: '集群版', rwsplit: '读写分离版' }[v] || v) },
       { key: 'capacity', label: '容量', sortable: true },
       { key: 'engine_version', label: '版本', sortable: true },
       { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{STATUS_LABELS[v] || v}</span> },
       { key: 'connection_domain', label: '连接地址', className: 'td-mono' },
-      { key: 'region_id', label: '区域', sortable: true, render: v => REGION_LABELS[v] || v },
+      { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
+      { key: 'renewal_price', label: '月续费', sortable: true, render: (v, row) => {
+        if (v !== null && v !== undefined) return <span style={{ color: '#e67e22', fontWeight: 500 }}>¥{fmtMoney(v)}</span>
+        return <span style={{ color: '#94a3b8' }}>-</span>
+      }},
     ],
   }
 
@@ -501,6 +516,9 @@ function ResourceManagement() {
       } else if (sortKey === 'creation_date' && activeTab === 'oss') {
         va = fmtDate(a.creation_date)
         vb = fmtDate(b.creation_date)
+      } else if (sortKey === 'renewal_price') {
+        va = a.renewal_price || 0
+        vb = b.renewal_price || 0
       } else {
         va = a[sortKey] ?? ''
         vb = b[sortKey] ?? ''
@@ -524,7 +542,7 @@ function ResourceManagement() {
       return mb < 1024 ? `${mb}M` : `${(mb / 1024).toFixed(mb % 1024 === 0 ? 0 : 1)}G`
     }
     const raw = item[col.key]
-    if (col.render) return col.render(raw)
+    if (col.render) return col.render(raw, item)
     return raw || '-'
   }
 
@@ -536,9 +554,9 @@ function ResourceManagement() {
   const tabs = [
     { key: 'ecs', label: 'ECS' },
     { key: 'rds', label: 'RDS' },
+    { key: 'redis', label: 'Redis' },
     { key: 'slb', label: 'SLB' },
     { key: 'oss', label: 'OSS' },
-    { key: 'redis', label: 'Redis' },
   ]
 
   const renderTable = () => {
@@ -1414,6 +1432,7 @@ function RamManagement() {
   const [policyLoading, setPolicyLoading] = useState(false)
   const [policyKeyword, setPolicyKeyword] = useState('')
   const [showPolicyDropdown, setShowPolicyDropdown] = useState(false)
+  const [duplicatePolicyWarning, setDuplicatePolicyWarning] = useState('')
   // 重置密码
   const [resetPwdUser, setResetPwdUser] = useState(null)
   const [newPassword, setNewPassword] = useState('')
@@ -1573,6 +1592,12 @@ function RamManagement() {
       toast.error(`禁止添加 ${selectedPolicy} 权限，该权限风险过高`)
       return
     }
+    // 检查是否已存在该权限
+    const exists = userPolicies.some(p => p.policy_name === selectedPolicy && p.policy_type === policyType)
+    if (exists) {
+      setDuplicatePolicyWarning(`该用户已拥有策略"${selectedPolicy}"，无需重复添加`)
+      return
+    }
     const acctId = currentUserAccountId || selectedAccount
     axios.post(`/api/accounts/${acctId}/ram/users/${selectedUser}/policies`, {
       policy_name: selectedPolicy,
@@ -1657,6 +1682,17 @@ function RamManagement() {
 
   return (
     <div className="page-content">
+      {duplicatePolicyWarning && (
+        <div className="modal-overlay" onClick={() => setDuplicatePolicyWarning('')}>
+          <div className="modal-box" onClick={e => e.stopPropagation()}>
+            <div className="modal-icon" style={{ color: '#f59e0b' }}>⚠</div>
+            <p className="modal-msg">{duplicatePolicyWarning}</p>
+            <div className="modal-actions">
+              <button className="btn-primary" onClick={() => setDuplicatePolicyWarning('')}>知道了</button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="page-header">
         <h2>RAM 用户管理</h2>
       </div>
@@ -1982,6 +2018,30 @@ function DnsManagement() {
     return domainSort.order === 'asc' ? ' ↑' : ' ↓'
   }
 
+  const getDomainDaysLeft = (endDate) => {
+    if (!endDate) return null
+    const s = String(endDate).trim()
+    let end
+    if (/^\d{10,13}$/.test(s)) {
+      const ts = s.length === 10 ? Number(s) * 1000 : Number(s)
+      end = new Date(ts)
+    } else {
+      end = new Date(s)
+    }
+    if (isNaN(end.getTime())) return null
+    const now = new Date()
+    return Math.ceil((end - now) / (1000 * 60 * 60 * 24))
+  }
+
+  const getDomainStatusTag = (domain) => {
+    const days = getDomainDaysLeft(domain.end_time)
+    if (days === null) return <span className="ssl-status unknown">未知</span>
+    if (days < 0) return <span className="ssl-status expired">已过期</span>
+    if (days <= 7) return <span className="ssl-status critical">即将过期（{days}天）</span>
+    if (days <= 30) return <span className="ssl-status warning">剩余 {days} 天</span>
+    return <span className="ssl-status ok">剩余 {days} 天</span>
+  }
+
   useEffect(() => {
     axios.get('/api/accounts').then(res => {
       setAccounts(res.data)
@@ -2183,6 +2243,7 @@ function DnsManagement() {
                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleDomainSort('holder')}>持有者{sortIcon('holder')}</th>
                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleDomainSort('record_count')}>记录数{sortIcon('record_count')}</th>
                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleDomainSort('end_time')}>到期时间{sortIcon('end_time')}</th>
+                  <th>状态</th>
                   <th style={{ width: 70 }}>操作</th>
                 </tr>
               </thead>
@@ -2198,6 +2259,7 @@ function DnsManagement() {
                     <td className="td-mono" style={{ color: d.end_time && (() => { const s=String(d.end_time).trim(); const ts=/^\d{10,13}$/.test(s)?(s.length===10?Number(s)*1000:Number(s)):new Date(s).getTime(); return !isNaN(ts)&&ts<Date.now() })() ? '#ef4444' : '#333' }}>
                       {d.end_time ? (() => { const s=String(d.end_time).trim(); const ts=/^\d{10,13}$/.test(s)?(s.length===10?Number(s)*1000:Number(s)):new Date(s).getTime(); return isNaN(ts)?s:new Date(ts).toLocaleDateString() })() : '-'}
                     </td>
+                    <td>{getDomainStatusTag(d)}</td>
                     <td style={{ whiteSpace: 'nowrap', textAlign: 'center' }}>
                       <button className="btn-link" onClick={(e) => { e.stopPropagation(); setSelectedDomain(d.domain_name); setTimeout(() => document.getElementById('dns-records-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100) }}>
                         解析
