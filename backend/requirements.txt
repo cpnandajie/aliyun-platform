@@ -16,3 +16,5 @@ alibabacloud_domain20180129>=2.0.0
 alibabacloud_cas20200407>=3.0.0
 alibabacloud_cms20190101>=3.0.0
 alibabacloud_sts20150401>=1.0.0
+alibabacloud_sas20181203>=2.0.0
+alibabacloud_vpc20160428>=3.0.0

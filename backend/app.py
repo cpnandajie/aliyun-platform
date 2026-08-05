@@ -4,7 +4,7 @@ import sqlite3
 import os
 import json
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 import threading
 import sys
 import logging
@@ -204,6 +204,72 @@ def init_db():
             FOREIGN KEY (account_id) REFERENCES accounts(id)
         )
     ''')
+    # VPC表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS vpc_instances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            instance_id TEXT NOT NULL,
+            vpc_name TEXT,
+            cidr_block TEXT,
+            region_id TEXT,
+            status TEXT,
+            created_time TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (account_id) REFERENCES accounts(id)
+        )
+    ''')
+    # 交换机表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS vswitch_instances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            instance_id TEXT NOT NULL,
+            vswitch_name TEXT,
+            vpc_id TEXT,
+            cidr_block TEXT,
+            region_id TEXT,
+            zone_id TEXT,
+            status TEXT,
+            available_ip_count INTEGER DEFAULT 0,
+            created_time TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (account_id) REFERENCES accounts(id)
+        )
+    ''')
+    # 弹性公网IP表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS eip_instances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            instance_id TEXT NOT NULL,
+            ip_address TEXT,
+            name TEXT,
+            status TEXT,
+            bandwidth TEXT,
+            region_id TEXT,
+            charge_type TEXT,
+            created_time TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (account_id) REFERENCES accounts(id)
+        )
+    ''')
+    # NAT网关表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS nat_instances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            instance_id TEXT NOT NULL,
+            name TEXT,
+            spec TEXT,
+            status TEXT,
+            vpc_id TEXT,
+            region_id TEXT,
+            created_time TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (account_id) REFERENCES accounts(id)
+        )
+    ''')
 
     # 月账单表
     cursor.execute('''
@@ -287,6 +353,80 @@ def init_db():
         )
     ''')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_logs_created ON operation_logs(created_at)')
+    # RAM用户表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ram_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            user_name TEXT NOT NULL,
+            user_principal_name TEXT,
+            display_name TEXT,
+            user_id TEXT,
+            create_date TEXT,
+            comments TEXT,
+            access_keys TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (account_id) REFERENCES accounts(id)
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_ram_users_account ON ram_users(account_id)')
+    # 域名表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS dns_domains (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            domain_name TEXT NOT NULL,
+            domain_id TEXT,
+            record_count INTEGER DEFAULT 0,
+            create_time TEXT,
+            end_time TEXT,
+            version_name TEXT,
+            status TEXT,
+            holder TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (account_id) REFERENCES accounts(id)
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_dns_domains_account ON dns_domains(account_id)')
+    # SSL证书表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS ssl_certificates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            cert_id TEXT NOT NULL,
+            name TEXT,
+            domain TEXT,
+            status TEXT,
+            start_date TEXT,
+            end_date TEXT,
+            cert_type TEXT,
+            issuer TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (account_id) REFERENCES accounts(id)
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_ssl_certs_account ON ssl_certificates(account_id)')
+    # 安全事件表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS security_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            event_name TEXT,
+            event_type TEXT,
+            level TEXT,
+            instance_name TEXT,
+            internet_ip TEXT,
+            intranet_ip TEXT,
+            gmt_create INTEGER,
+            gmt_modified INTEGER,
+            dealed TEXT,
+            event_status TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (account_id) REFERENCES accounts(id)
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_security_events_account ON security_events(account_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_security_events_gmt_create ON security_events(gmt_create)')
     conn.commit()
     conn.close()
     # 检查accounts表有last_sync_at列（后续版本新增）
@@ -318,6 +458,33 @@ def init_db():
             conn.close()
         except Exception:
             pass
+    # 检查vswitch表有available_ip_count列
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(vswitch_instances)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'available_ip_count' not in columns:
+            cursor.execute('ALTER TABLE vswitch_instances ADD COLUMN available_ip_count INTEGER DEFAULT 0')
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    # 创建系统设置表
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS system_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 init_db()
 
@@ -352,9 +519,10 @@ def log_operation(module, action, detail='', account_id=None, account_name=None,
     """记录操作日志（除查询外的所有操作）。该函数不抛出异常，避免影响主流程。"""
     try:
         execute_db('''
-            INSERT INTO operation_logs (account_id, account_name, module, action, detail, success, error_msg)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (account_id, account_name, module, action, str(detail), 1 if success else 0, str(error_msg) if error_msg else ''))
+            INSERT INTO operation_logs (account_id, account_name, module, action, detail, success, error_msg, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (account_id, account_name, module, action, str(detail), 1 if success else 0, str(error_msg) if error_msg else '',
+              datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
     except Exception as e:
         print(f"[WARN] 写入操作日志失败: {e}")
 
@@ -836,6 +1004,544 @@ def sync_redis(account_id, access_key_id, access_key_secret):
         return 0
 
 
+def sync_vpc(account_id, access_key_id, access_key_secret):
+    """同步VPC实例数据"""
+    try:
+        from alibabacloud_vpc20160428.client import Client as VpcClient
+        from alibabacloud_vpc20160428 import models as vpc_models
+        from alibabacloud_tea_openapi import models as open_api_models
+
+        total_synced = 0
+        for region_id in get_default_regions():
+            try:
+                config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
+                config.endpoint = 'vpc.aliyuncs.com'
+                client = VpcClient(config)
+
+                page_number = 1
+                while True:
+                    req = vpc_models.DescribeVpcsRequest(region_id=region_id, page_size=50, page_number=page_number)
+                    resp = client.describe_vpcs(req)
+                    vpcs = resp.body.vpcs.vpc if resp.body.vpcs else []
+
+                    for vpc in vpcs:
+                        execute_db('''
+                            INSERT OR REPLACE INTO vpc_instances
+                            (account_id, instance_id, vpc_name, cidr_block, region_id, status, created_time, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            account_id, vpc.vpc_id, getattr(vpc, 'vpc_name', ''),
+                            getattr(vpc, 'cidr_block', ''), region_id,
+                            getattr(vpc, 'status', ''), getattr(vpc, 'creation_time', ''),
+                            datetime.now()
+                        ))
+                        total_synced += 1
+
+                    total_count = resp.body.total_count or 0
+                    if page_number * 50 >= total_count:
+                        break
+                    page_number += 1
+            except Exception as e:
+                print(f"[WARN] 同步VPC {region_id} 失败: {str(e)}")
+                continue
+        return total_synced
+    except ImportError:
+        print("[ERROR] VPC SDK未安装")
+        return 0
+    except Exception as e:
+        print(f"[ERROR] 同步VPC失败: {str(e)}")
+        return 0
+
+
+def sync_vswitch(account_id, access_key_id, access_key_secret):
+    """同步交换机实例数据"""
+    try:
+        from alibabacloud_vpc20160428.client import Client as VpcClient
+        from alibabacloud_vpc20160428 import models as vpc_models
+        from alibabacloud_tea_openapi import models as open_api_models
+
+        total_synced = 0
+        for region_id in get_default_regions():
+            try:
+                config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
+                config.endpoint = 'vpc.aliyuncs.com'
+                client = VpcClient(config)
+
+                page_number = 1
+                while True:
+                    req = vpc_models.DescribeVSwitchesRequest(region_id=region_id, page_size=50, page_number=page_number)
+                    resp = client.describe_vswitches(req)
+                    # 处理响应结构
+                    vswitches = []
+                    if resp.body and resp.body.v_switches and resp.body.v_switches.v_switch:
+                        vswitches = resp.body.v_switches.v_switch
+                    elif resp.body and hasattr(resp.body, 'vswitches') and resp.body.vswitches:
+                        vswitches = resp.body.vswitches.v_switch if hasattr(resp.body.vswitches, 'v_switch') else []
+
+                    for vs in vswitches:
+                        # 兼容不同版本的属性名
+                        vs_id = getattr(vs, 'v_switch_id', None) or getattr(vs, 'vswitch_id', '')
+                        vs_name = getattr(vs, 'v_switch_name', None) or getattr(vs, 'vswitch_name', '')
+                        available_ip_count = getattr(vs, 'available_ip_address_count', 0) or 0
+                        execute_db('''
+                            INSERT OR REPLACE INTO vswitch_instances
+                            (account_id, instance_id, vswitch_name, vpc_id, cidr_block, region_id, zone_id, status, available_ip_count, created_time, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            account_id, vs_id, vs_name,
+                            getattr(vs, 'vpc_id', ''), getattr(vs, 'cidr_block', ''),
+                            region_id, getattr(vs, 'zone_id', ''),
+                            getattr(vs, 'status', ''), available_ip_count,
+                            getattr(vs, 'creation_time', ''),
+                            datetime.now()
+                        ))
+                        total_synced += 1
+
+                    total_count = resp.body.total_count or 0
+                    if page_number * 50 >= total_count:
+                        break
+                    page_number += 1
+            except Exception as e:
+                print(f"[WARN] 同步交换机 {region_id} 失败: {str(e)}")
+                continue
+        print(f"[INFO] 交换机同步完成，共同步 {total_synced} 条")
+        return total_synced
+    except ImportError:
+        print("[ERROR] VPC SDK未安装")
+        return 0
+    except Exception as e:
+        print(f"[ERROR] 同步交换机失败: {str(e)}")
+        return 0
+
+
+def sync_eip(account_id, access_key_id, access_key_secret):
+    """同步弹性公网IP数据"""
+    try:
+        from alibabacloud_vpc20160428.client import Client as VpcClient
+        from alibabacloud_vpc20160428 import models as vpc_models
+        from alibabacloud_tea_openapi import models as open_api_models
+
+        total_synced = 0
+        for region_id in get_default_regions():
+            try:
+                config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
+                config.endpoint = 'vpc.aliyuncs.com'
+                client = VpcClient(config)
+
+                page_number = 1
+                while True:
+                    req = vpc_models.DescribeEipAddressesRequest(region_id=region_id, page_size=50, page_number=page_number)
+                    resp = client.describe_eip_addresses(req)
+                    eips = resp.body.eip_addresses.eip_address if resp.body.eip_addresses else []
+
+                    for eip in eips:
+                        execute_db('''
+                            INSERT OR REPLACE INTO eip_instances
+                            (account_id, instance_id, ip_address, name, status, bandwidth, region_id, charge_type, created_time, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            account_id, eip.allocation_id, getattr(eip, 'ip_address', ''),
+                            getattr(eip, 'name', ''), getattr(eip, 'status', ''),
+                            getattr(eip, 'bandwidth', ''), region_id,
+                            getattr(eip, 'internet_charge_type', ''),
+                            getattr(eip, 'allocation_time', ''),
+                            datetime.now()
+                        ))
+                        total_synced += 1
+
+                    total_count = resp.body.total_count or 0
+                    if page_number * 50 >= total_count:
+                        break
+                    page_number += 1
+            except Exception as e:
+                print(f"[WARN] 同步EIP {region_id} 失败: {str(e)}")
+                continue
+        return total_synced
+    except ImportError:
+        print("[ERROR] VPC SDK未安装")
+        return 0
+    except Exception as e:
+        print(f"[ERROR] 同步EIP失败: {str(e)}")
+        return 0
+
+
+def sync_nat(account_id, access_key_id, access_key_secret):
+    """同步NAT网关数据"""
+    try:
+        from alibabacloud_vpc20160428.client import Client as VpcClient
+        from alibabacloud_vpc20160428 import models as vpc_models
+        from alibabacloud_tea_openapi import models as open_api_models
+
+        total_synced = 0
+        for region_id in get_default_regions():
+            try:
+                config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
+                config.endpoint = 'vpc.aliyuncs.com'
+                client = VpcClient(config)
+
+                page_number = 1
+                while True:
+                    req = vpc_models.DescribeNatGatewaysRequest(region_id=region_id, page_size=50, page_number=page_number)
+                    resp = client.describe_nat_gateways(req)
+                    nats = resp.body.nat_gateways.nat_gateway if resp.body.nat_gateways else []
+
+                    for nat in nats:
+                        execute_db('''
+                            INSERT OR REPLACE INTO nat_instances
+                            (account_id, instance_id, name, spec, status, vpc_id, region_id, created_time, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            account_id, nat.nat_gateway_id, getattr(nat, 'name', ''),
+                            getattr(nat, 'spec', ''), getattr(nat, 'status', ''),
+                            getattr(nat, 'vpc_id', ''), region_id,
+                            getattr(nat, 'creation_time', ''),
+                            datetime.now()
+                        ))
+                        total_synced += 1
+
+                    total_count = resp.body.total_count or 0
+                    if page_number * 50 >= total_count:
+                        break
+                    page_number += 1
+            except Exception as e:
+                print(f"[WARN] 同步NAT {region_id} 失败: {str(e)}")
+                continue
+        return total_synced
+    except ImportError:
+        print("[ERROR] VPC SDK未安装")
+        return 0
+    except Exception as e:
+        print(f"[ERROR] 同步NAT失败: {str(e)}")
+        return 0
+
+
+def sync_ram_users(account_id, access_key_id, access_key_secret):
+    """同步RAM用户数据"""
+    try:
+        from alibabacloud_ram20150501.client import Client as RamClient
+        from alibabacloud_ram20150501 import models as ram_models
+        from alibabacloud_tea_openapi import models as open_api_models
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import json
+
+        config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
+        config.endpoint = 'ram.aliyuncs.com'
+        client = RamClient(config)
+
+        # 获取用户列表
+        req = ram_models.ListUsersRequest()
+        resp = client.list_users(req)
+        users = []
+        if resp.body and resp.body.users and resp.body.users.user:
+            for u in resp.body.users.user:
+                users.append({
+                    'user_name': u.user_name,
+                    'user_principal_name': getattr(u, 'user_principal_name', '') or '',
+                    'display_name': u.display_name,
+                    'user_id': u.user_id,
+                    'create_date': str(u.create_date) if u.create_date else '',
+                    'comments': u.comments or '',
+                })
+
+        # 并发获取AccessKey
+        def fetch_access_keys(user_name):
+            try:
+                ak_req = ram_models.ListAccessKeysRequest(user_name=user_name)
+                ak_resp = client.list_access_keys(ak_req)
+                if ak_resp.body and ak_resp.body.access_keys and ak_resp.body.access_keys.access_key:
+                    return user_name, [ak.access_key_id for ak in ak_resp.body.access_keys.access_key]
+            except Exception:
+                pass
+            return user_name, []
+
+        with ThreadPoolExecutor(max_workers=min(10, len(users))) as executor:
+            futures = {executor.submit(fetch_access_keys, u['user_name']): u for u in users}
+            for future in as_completed(futures):
+                user_name, keys = future.result()
+                for u in users:
+                    if u['user_name'] == user_name:
+                        u['access_keys'] = json.dumps(keys)
+                        break
+
+        # 清空旧数据并插入新数据
+        execute_db('DELETE FROM ram_users WHERE account_id = ?', (account_id,))
+        for u in users:
+            execute_db('''
+                INSERT INTO ram_users (account_id, user_name, user_principal_name, display_name, user_id, create_date, comments, access_keys, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (account_id, u['user_name'], u['user_principal_name'], u['display_name'], u['user_id'], u['create_date'], u['comments'], u.get('access_keys', '[]'), datetime.now()))
+
+        print(f"[INFO] RAM用户同步完成: {len(users)}个")
+        return len(users)
+    except Exception as e:
+        print(f"[ERROR] 同步RAM用户失败: {str(e)}")
+        return 0
+
+
+def sync_dns_domains(account_id, access_key_id, access_key_secret):
+    """同步域名数据"""
+    try:
+        from alibabacloud_alidns20150109.client import Client as DnsClient
+        from alibabacloud_alidns20150109 import models as dns_models
+        from alibabacloud_domain20180129.client import Client as DomainClient
+        from alibabacloud_domain20180129 import models as domain_models
+        from alibabacloud_tea_openapi import models as open_api_models
+
+        # DNS API 获取域名列表
+        dns_config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
+        dns_config.endpoint = 'alidns.aliyuncs.com'
+        dns_client = DnsClient(dns_config)
+
+        domains = []
+        req = dns_models.DescribeDomainsRequest()
+        resp = dns_client.describe_domains(req)
+        if resp.body and resp.body.domains and resp.body.domains.domain:
+            for d in resp.body.domains.domain:
+                domains.append({
+                    'domain_name': d.domain_name,
+                    'domain_id': d.domain_id,
+                    'record_count': d.record_count if hasattr(d, 'record_count') else 0,
+                    'create_time': str(d.create_time) if hasattr(d, 'create_time') and d.create_time else '',
+                    'end_time': str(d.end_time) if hasattr(d, 'end_time') and d.end_time else '',
+                    'version_name': d.version_name if hasattr(d, 'version_name') else '',
+                    'status': d.domain_status if hasattr(d, 'domain_status') else '',
+                    'holder': '',
+                })
+
+        # 域名 API 补充到期时间和持有者
+        try:
+            domain_config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
+            domain_config.endpoint = 'domain.aliyuncs.com'
+            domain_client = DomainClient(domain_config)
+            page = 1
+            expiry_map = {}
+            holder_map = {}
+            while True:
+                qr = domain_models.QueryDomainListRequest(page_num=page, page_size=100)
+                dr = domain_client.query_domain_list(qr)
+                if not dr.body or not dr.body.data or not dr.body.data.domain:
+                    break
+                for dom in dr.body.data.domain:
+                    exp = getattr(dom, 'expiration_date_long', None) or getattr(dom, 'expiration_date', None)
+                    if exp:
+                        expiry_map[dom.domain_name] = str(exp)
+                    holder = getattr(dom, 'ccompany', None) or getattr(dom, 'registrant_type', None)
+                    if holder:
+                        holder_map[dom.domain_name] = str(holder)
+                if dr.body.total_item_num and page * 100 >= dr.body.total_item_num:
+                    break
+                page += 1
+            # 合并到期时间和持有者
+            for d in domains:
+                if not d['end_time'] and d['domain_name'] in expiry_map:
+                    d['end_time'] = expiry_map[d['domain_name']]
+                if d['domain_name'] in holder_map:
+                    d['holder'] = holder_map[d['domain_name']]
+        except Exception as e:
+            print(f'[WARN] 域名 API 查询失败: {e}')
+
+        # 清空旧数据并插入新数据
+        execute_db('DELETE FROM dns_domains WHERE account_id = ?', (account_id,))
+        for d in domains:
+            execute_db('''
+                INSERT INTO dns_domains (account_id, domain_name, domain_id, record_count, create_time, end_time, version_name, status, holder, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (account_id, d['domain_name'], d['domain_id'], d['record_count'], d['create_time'], d['end_time'], d['version_name'], d['status'], d['holder'], datetime.now()))
+
+        print(f"[INFO] 域名同步完成: {len(domains)}个")
+        return len(domains)
+    except Exception as e:
+        print(f"[ERROR] 同步域名失败: {str(e)}")
+        return 0
+
+
+def sync_ssl_certificates(account_id, access_key_id, access_key_secret):
+    """同步SSL证书数据"""
+    try:
+        from alibabacloud_cas20200407.client import Client as CasClient
+        from alibabacloud_cas20200407 import models as cas_models
+        from alibabacloud_tea_openapi import models as open_api_models
+
+        config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
+        config.endpoint = 'cas.aliyuncs.com'
+        client = CasClient(config)
+
+        certs = []
+        seen_ids = set()
+
+        # V1.0: ListUserCertificateOrder
+        try:
+            req1 = cas_models.ListUserCertificateOrderRequest(current_page=1, show_size=100)
+            resp1 = client.list_user_certificate_order(req1)
+            if resp1.body and resp1.body.certificate_order_list:
+                for c in resp1.body.certificate_order_list:
+                    raw = {}
+                    if hasattr(c, 'to_map'):
+                        try:
+                            raw = c.to_map()
+                        except:
+                            pass
+                    if not raw:
+                        for k, v in c.__dict__.items():
+                            if not k.startswith('_') and v is not None:
+                                raw[k] = v
+
+                    def _pick(d, *keys):
+                        for k in keys:
+                            if k in d and d[k] is not None and d[k] != '':
+                                return d[k]
+                        return ''
+
+                    cert_id = str(_pick(raw, 'CertificateId', 'Id', 'id'))
+                    if cert_id and cert_id in seen_ids:
+                        continue
+                    seen_ids.add(cert_id)
+
+                    certs.append({
+                        'cert_id': cert_id,
+                        'name': _pick(raw, 'Name', 'CertName'),
+                        'domain': _pick(raw, 'Domain', 'CommonName'),
+                        'status': _pick(raw, 'Status', 'CertStatus'),
+                        'start_date': str(_pick(raw, 'StartDate', 'CertStartTime', 'BuyDate')),
+                        'end_date': str(_pick(raw, 'EndDate', 'CertEndTime', 'ExpireDate')),
+                        'cert_type': _pick(raw, 'CertificateType', 'CertType', 'Type'),
+                        'issuer': _pick(raw, 'BrandName', 'CertBrand', 'Issuer'),
+                    })
+        except Exception as e:
+            print(f'[WARN] SSL V1.0 查询失败: {e}')
+
+        # V2.0: ListCertificates
+        try:
+            req2 = cas_models.ListCertificatesRequest(current_page=1, show_size=100)
+            resp2 = client.list_certificates(req2)
+            if resp2.body and resp2.body.certificate_list:
+                for c in resp2.body.certificate_list:
+                    raw = {}
+                    if hasattr(c, 'to_map'):
+                        try:
+                            raw = c.to_map()
+                        except:
+                            pass
+                    if not raw:
+                        for k, v in c.__dict__.items():
+                            if not k.startswith('_') and v is not None:
+                                raw[k] = v
+
+                    def _pick2(d, *keys):
+                        for k in keys:
+                            if k in d and d[k] is not None and d[k] != '':
+                                return d[k]
+                        return ''
+
+                    cert_id = str(_pick2(raw, 'CertificateId', 'certificate_id'))
+                    instance_id = str(_pick2(raw, 'InstanceId', 'instance_id'))
+                    if cert_id and cert_id in seen_ids:
+                        continue
+                    seen_ids.add(cert_id)
+
+                    not_before = _pick2(raw, 'NotBefore', 'not_before')
+                    not_after = _pick2(raw, 'NotAfter', 'not_after')
+                    cert_status = _pick2(raw, 'CertificateStatus', 'certificate_status')
+                    status_map = {'issued': '已签发', 'revoked': '已吊销', 'willExpire': '即将过期', 'expired': '已过期'}
+                    status = status_map.get(cert_status, cert_status)
+                    source = _pick2(raw, 'CertificateSource', 'certificate_source')
+                    cert_type_map = {'BUY': '正式证书', 'TEST': '测试证书', 'UPLOAD': '上传证书'}
+                    cert_type = cert_type_map.get(source, source)
+
+                    certs.append({
+                        'cert_id': cert_id or instance_id,
+                        'name': _pick2(raw, 'CertificateName', 'certificate_name', 'CommonName'),
+                        'domain': _pick2(raw, 'Domain', 'CommonName'),
+                        'status': status,
+                        'start_date': str(not_before) if not_before else '',
+                        'end_date': str(not_after) if not_after else '',
+                        'cert_type': cert_type,
+                        'issuer': _pick2(raw, 'Issuer', 'issuer'),
+                    })
+        except Exception as e:
+            print(f'[WARN] SSL V2.0 查询失败: {e}')
+
+        # 清空旧数据并插入新数据
+        execute_db('DELETE FROM ssl_certificates WHERE account_id = ?', (account_id,))
+        for c in certs:
+            execute_db('''
+                INSERT INTO ssl_certificates (account_id, cert_id, name, domain, status, start_date, end_date, cert_type, issuer, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (account_id, c['cert_id'], c['name'], c['domain'], c['status'], c['start_date'], c['end_date'], c['cert_type'], c['issuer'], datetime.now()))
+
+        print(f"[INFO] SSL证书同步完成: {len(certs)}个")
+        return len(certs)
+    except Exception as e:
+        print(f"[ERROR] 同步SSL证书失败: {str(e)}")
+        return 0
+
+
+def sync_security_events(account_id, access_key_id, access_key_secret, days=30):
+    """同步安全事件数据（最近30天）"""
+    try:
+        from alibabacloud_sas20181203.client import Client as SasClient
+        from alibabacloud_sas20181203 import models as sas_models
+        from alibabacloud_tea_openapi import models as open_api_models
+
+        config = open_api_models.Config(
+            access_key_id=access_key_id,
+            access_key_secret=access_key_secret
+        )
+        config.endpoint = 'tds.aliyuncs.com'
+        client = SasClient(config)
+
+        all_events = []
+        from_ts = int((datetime.now() - timedelta(days=days)).timestamp() * 1000)
+
+        page = 1
+        while True:
+            req = sas_models.DescribeSuspEventsRequest(
+                page_size=100,
+                current_page=page,
+            )
+            resp = client.describe_susp_events(req)
+            
+            events = []
+            if resp.body and hasattr(resp.body, 'susp_events') and resp.body.susp_events:
+                events = resp.body.susp_events
+            
+            for event in events:
+                all_events.append({
+                    'event_name': getattr(event, 'name', '') or getattr(event, 'alarm_event_name', ''),
+                    'event_type': getattr(event, 'alarm_event_type_display', '') or getattr(event, 'alias_event_type', ''),
+                    'level': getattr(event, 'level', ''),
+                    'instance_name': getattr(event, 'instance_name', ''),
+                    'internet_ip': getattr(event, 'internet_ip', ''),
+                    'intranet_ip': getattr(event, 'intranet_ip', ''),
+                    'gmt_create': getattr(event, 'last_time_stamp', 0) or getattr(event, 'gmt_create', 0),
+                    'gmt_modified': getattr(event, 'gmt_modified', 0),
+                    'dealed': getattr(event, 'dealed', ''),
+                    'event_status': getattr(event, 'event_status', ''),
+                })
+
+            total = resp.body.total_count if hasattr(resp.body, 'total_count') else 0
+            if page * 100 >= total:
+                break
+            page += 1
+
+        # 按最近发生时间过滤
+        filtered_events = [e for e in all_events if e.get('gmt_create', 0) >= from_ts]
+        
+        # 清空旧数据并插入新数据
+        execute_db('DELETE FROM security_events WHERE account_id = ?', (account_id,))
+        for e in filtered_events:
+            execute_db('''
+                INSERT INTO security_events (account_id, event_name, event_type, level, instance_name, internet_ip, intranet_ip, gmt_create, gmt_modified, dealed, event_status, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (account_id, e['event_name'], e['event_type'], e['level'], e['instance_name'], e['internet_ip'], e['intranet_ip'], e['gmt_create'], e['gmt_modified'], e['dealed'], e['event_status'], datetime.now()))
+
+        print(f"[INFO] 安全事件同步完成: {len(filtered_events)}个")
+        return len(filtered_events)
+    except Exception as e:
+        print(f"[ERROR] 同步安全事件失败: {str(e)}")
+        return 0
+
+
 def sync_bill(account_id, access_key_id, access_key_secret):
     """同步账单数据（仅当月）"""
     try:
@@ -843,6 +1549,7 @@ def sync_bill(account_id, access_key_id, access_key_secret):
         from alibabacloud_bssopenapi20171214 import models as bss_models
         from alibabacloud_tea_openapi import models as open_api_models
 
+        acct_name = get_account_name(account_id)
         config = open_api_models.Config(
             access_key_id=access_key_id,
             access_key_secret=access_key_secret
@@ -916,14 +1623,14 @@ def sync_bill(account_id, access_key_id, access_key_secret):
             app.logger.info(f"[账单] {billing_cycle} 同步成功，金额: {total_amount}")
 
         except Exception as e:
-            print(f"[WARN] 同步账单 {billing_cycle} 失败: {str(e)}")
+            print(f"[WARN] 同步账号 {acct_name} 账单 {billing_cycle} 失败: {str(e)}")
 
         return synced_cycles
     except ImportError:
         print("[ERROR] BSS SDK未安装")
         return []
     except Exception as e:
-        print(f"[ERROR] 同步账单失败: {str(e)}")
+        print(f"[ERROR] 同步账号 {acct_name} 账单失败: {str(e)}")
         return []
 
 
@@ -934,6 +1641,7 @@ def sync_balance(account_id, access_key_id, access_key_secret):
         from alibabacloud_bssopenapi20171214 import models as bss_models
         from alibabacloud_tea_openapi import models as open_api_models
 
+        acct_name = get_account_name(account_id)
         config = open_api_models.Config(
             access_key_id=access_key_id,
             access_key_secret=access_key_secret
@@ -1013,14 +1721,14 @@ def sync_balance(account_id, access_key_id, access_key_secret):
 
             return True
         except Exception as e:
-            app.logger.error(f"同步余额失败: {str(e)}")
+            app.logger.error(f"同步账号 {acct_name} 余额失败: {str(e)}")
             return False
 
     except ImportError:
         app.logger.error("BSS SDK未安装")
         return False
     except Exception as e:
-        app.logger.error(f"同步余额失败: {str(e)}")
+        app.logger.error(f"同步账号 {acct_name} 余额失败: {str(e)}")
         return False
 
 
@@ -1028,8 +1736,8 @@ def sync_renewal_prices(account_id, access_key_id, access_key_secret):
     """同步续费价格（ECS、RDS、Redis）"""
     from concurrent.futures import ThreadPoolExecutor
     
-    # ECS续费价格
-    ecs_instances = query_db('SELECT instance_id, region_id FROM ecs_instances WHERE account_id = ?', (account_id,))
+    # ECS续费价格（跳过已停止的实例）
+    ecs_instances = query_db('SELECT instance_id, region_id FROM ecs_instances WHERE account_id = ? AND status != ?', (account_id, 'Stopped'))
     if ecs_instances:
         def query_ecs_price(inst):
             try:
@@ -1053,12 +1761,18 @@ def sync_renewal_prices(account_id, access_key_id, access_key_secret):
                 if price is not None:
                     execute_db('UPDATE rds_instances SET renewal_price = ? WHERE instance_id = ? AND account_id = ?',
                               (price, inst['instance_id'], account_id))
+                    return price
+                else:
+                    print(f"[DEBUG] RDS {inst['instance_id']} 续费价格查询返回 None")
             except Exception as e:
                 app.logger.warning(f"RDS续费价格查询失败 {inst['instance_id']}: {str(e)}")
+                print(f"[ERROR] RDS {inst['instance_id']} 续费价格查询异常: {str(e)}")
         
         with ThreadPoolExecutor(max_workers=5) as executor:
-            executor.map(query_rds_price, rds_instances)
-        app.logger.info(f"RDS续费价格同步完成: {len(rds_instances)}个实例")
+            results = list(executor.map(query_rds_price, rds_instances))
+        success_count = sum(1 for r in results if r is not None)
+        app.logger.info(f"RDS续费价格同步完成: {len(rds_instances)}个实例, 成功{success_count}个")
+        print(f"[INFO] RDS续费价格同步完成: {len(rds_instances)}个实例, 成功{success_count}个")
     
     # Redis续费价格
     redis_instances = query_db('SELECT instance_id, region_id FROM redis_instances WHERE account_id = ?', (account_id,))
@@ -1069,12 +1783,18 @@ def sync_renewal_prices(account_id, access_key_id, access_key_secret):
                 if price is not None:
                     execute_db('UPDATE redis_instances SET renewal_price = ? WHERE instance_id = ? AND account_id = ?',
                               (price, inst['instance_id'], account_id))
+                    return price
+                else:
+                    print(f"[DEBUG] Redis {inst['instance_id']} 续费价格查询返回 None")
             except Exception as e:
                 app.logger.warning(f"Redis续费价格查询失败 {inst['instance_id']}: {str(e)}")
+                print(f"[ERROR] Redis {inst['instance_id']} 续费价格查询异常: {str(e)}")
         
         with ThreadPoolExecutor(max_workers=5) as executor:
-            executor.map(query_redis_price, redis_instances)
-        app.logger.info(f"Redis续费价格同步完成: {len(redis_instances)}个实例")
+            results = list(executor.map(query_redis_price, redis_instances))
+        success_count = sum(1 for r in results if r is not None)
+        app.logger.info(f"Redis续费价格同步完成: {len(redis_instances)}个实例, 成功{success_count}个")
+        print(f"[INFO] Redis续费价格同步完成: {len(redis_instances)}个实例, 成功{success_count}个")
 
 
 def do_sync_account(account_id, sync_type='all'):
@@ -1116,7 +1836,8 @@ def do_sync_account(account_id, sync_type='all'):
         # ===== 资源同步 =====
         if sync_resources:
             # 删除旧资源数据
-            for table in ['ecs_instances', 'rds_instances', 'slb_instances', 'oss_buckets', 'redis_instances']:
+            for table in ['ecs_instances', 'rds_instances', 'slb_instances', 'oss_buckets', 'redis_instances',
+                         'vpc_instances', 'vswitch_instances', 'eip_instances', 'nat_instances']:
                 execute_db(f'DELETE FROM {table} WHERE account_id = ?', (account_id,))
 
             try:
@@ -1153,6 +1874,66 @@ def do_sync_account(account_id, sync_type='all'):
                 results['redis'] = 0
                 errors.append(f'Redis: {str(e)}')
                 print(f"[ERROR] 同步Redis异常: {str(e)}")
+
+            # 网络资源同步
+            try:
+                results['vpc'] = sync_vpc(account_id, ak, sk)
+            except Exception as e:
+                results['vpc'] = 0
+                errors.append(f'VPC: {str(e)}')
+                print(f"[ERROR] 同步VPC异常: {str(e)}")
+
+            try:
+                results['vswitch'] = sync_vswitch(account_id, ak, sk)
+            except Exception as e:
+                results['vswitch'] = 0
+                errors.append(f'交换机: {str(e)}')
+                print(f"[ERROR] 同步交换机异常: {str(e)}")
+
+            try:
+                results['eip'] = sync_eip(account_id, ak, sk)
+            except Exception as e:
+                results['eip'] = 0
+                errors.append(f'EIP: {str(e)}')
+                print(f"[ERROR] 同步EIP异常: {str(e)}")
+
+            try:
+                results['nat'] = sync_nat(account_id, ak, sk)
+            except Exception as e:
+                results['nat'] = 0
+                errors.append(f'NAT: {str(e)}')
+                print(f"[ERROR] 同步NAT异常: {str(e)}")
+
+            # RAM用户同步
+            try:
+                results['ram'] = sync_ram_users(account_id, ak, sk)
+            except Exception as e:
+                results['ram'] = 0
+                errors.append(f'RAM: {str(e)}')
+                print(f"[ERROR] 同步RAM用户异常: {str(e)}")
+
+            # 域名同步
+            try:
+                results['dns'] = sync_dns_domains(account_id, ak, sk)
+            except Exception as e:
+                results['dns'] = 0
+                errors.append(f'DNS: {str(e)}')
+                print(f"[ERROR] 同步域名异常: {str(e)}")
+
+            # SSL证书同步
+            try:
+                results['ssl'] = sync_ssl_certificates(account_id, ak, sk)
+            except Exception as e:
+                results['ssl'] = 0
+                errors.append(f'SSL: {str(e)}')
+                print(f"[ERROR] 同步SSL证书异常: {str(e)}")
+
+            try:
+                results['security_events'] = sync_security_events(account_id, ak, sk)
+            except Exception as e:
+                results['security_events'] = 0
+                errors.append(f'安全事件: {str(e)}')
+                print(f"[ERROR] 同步安全事件异常: {str(e)}")
 
             # 同步续费价格
             try:
@@ -1255,6 +2036,12 @@ def _run_sync_all_task(task_id, accounts, sync_type):
                     'account_name': acct['name'],
                     **result
                 })
+                # 记录每个账号的同步日志
+                type_label = {'all': '全部', 'resources': '资源', 'bills': '账单'}.get(sync_type, '全部')
+                ok = result.get('success', False) if isinstance(result, dict) else False
+                log_operation('数据同步', f'同步{type_label}', result.get('message', '') if isinstance(result, dict) else '',
+                              account_id=acct['id'], account_name=acct['name'], success=ok,
+                              error_msg='' if ok else (result.get('message', '') if isinstance(result, dict) else ''))
             except Exception as e:
                 results.append({
                     'account_id': acct['id'],
@@ -1262,6 +2049,8 @@ def _run_sync_all_task(task_id, accounts, sync_type):
                     'success': False,
                     'message': f'同步异常: {str(e)}'
                 })
+                log_operation('数据同步', '同步任务', f'同步异常: {str(e)}',
+                              account_id=acct['id'], account_name=acct['name'], success=False, error_msg=str(e))
 
             with sync_tasks_lock:
                 sync_tasks[task_id]['current'] = i + 1
@@ -1782,6 +2571,222 @@ def api_get_slb():
     return jsonify(instances)
 
 
+@app.route('/api/vpc', methods=['GET'])
+def api_get_vpc():
+    """获取VPC列表"""
+    account_id = request.args.get('account_id')
+    keyword = request.args.get('keyword', '').strip()
+    region = request.args.get('region', '').strip()
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    sql = '''
+        SELECT v.*, a.name as account_name
+        FROM vpc_instances v
+        LEFT JOIN accounts a ON v.account_id = a.id
+        WHERE 1=1
+    '''
+    params = []
+
+    if account_id:
+        sql += ' AND v.account_id = ?'
+        params.append(account_id)
+    if region:
+        sql += ' AND v.region_id = ?'
+        params.append(region)
+    if keyword:
+        sql += ' AND (v.instance_id LIKE ? OR v.vpc_name LIKE ? OR v.cidr_block LIKE ?)'
+        kw = f'%{keyword}%'
+        params.extend([kw, kw, kw])
+
+    sql += ' ORDER BY v.created_time DESC, v.account_id, v.region_id'
+
+    cursor.execute(sql, params)
+    instances = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return jsonify(instances)
+
+
+@app.route('/api/vswitch', methods=['GET'])
+def api_get_vswitch():
+    """获取交换机列表"""
+    account_id = request.args.get('account_id')
+    keyword = request.args.get('keyword', '').strip()
+    region = request.args.get('region', '').strip()
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    sql = '''
+        SELECT vs.*, a.name as account_name
+        FROM vswitch_instances vs
+        LEFT JOIN accounts a ON vs.account_id = a.id
+        WHERE 1=1
+    '''
+    params = []
+
+    if account_id:
+        sql += ' AND vs.account_id = ?'
+        params.append(account_id)
+    if region:
+        sql += ' AND vs.region_id = ?'
+        params.append(region)
+    if keyword:
+        sql += ' AND (vs.instance_id LIKE ? OR vs.vswitch_name LIKE ? OR vs.cidr_block LIKE ?)'
+        kw = f'%{keyword}%'
+        params.extend([kw, kw, kw])
+
+    sql += ' ORDER BY vs.created_time DESC, vs.account_id, vs.region_id'
+
+    cursor.execute(sql, params)
+    instances = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return jsonify(instances)
+
+
+@app.route('/api/eip', methods=['GET'])
+def api_get_eip():
+    """获取弹性公网IP列表"""
+    account_id = request.args.get('account_id')
+    keyword = request.args.get('keyword', '').strip()
+    region = request.args.get('region', '').strip()
+    status = request.args.get('status', '').strip()
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    sql = '''
+        SELECT e.*, a.name as account_name
+        FROM eip_instances e
+        LEFT JOIN accounts a ON e.account_id = a.id
+        WHERE 1=1
+    '''
+    params = []
+
+    if account_id:
+        sql += ' AND e.account_id = ?'
+        params.append(account_id)
+    if region:
+        sql += ' AND e.region_id = ?'
+        params.append(region)
+    if status:
+        sql += ' AND e.status = ?'
+        params.append(status)
+    if keyword:
+        sql += ' AND (e.instance_id LIKE ? OR e.ip_address LIKE ? OR e.name LIKE ?)'
+        kw = f'%{keyword}%'
+        params.extend([kw, kw, kw])
+
+    sql += ' ORDER BY e.created_time DESC, e.account_id, e.region_id'
+
+    cursor.execute(sql, params)
+    instances = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return jsonify(instances)
+
+
+@app.route('/api/nat', methods=['GET'])
+def api_get_nat():
+    """获取NAT网关列表"""
+    account_id = request.args.get('account_id')
+    keyword = request.args.get('keyword', '').strip()
+    region = request.args.get('region', '').strip()
+    status = request.args.get('status', '').strip()
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    sql = '''
+        SELECT n.*, a.name as account_name
+        FROM nat_instances n
+        LEFT JOIN accounts a ON n.account_id = a.id
+        WHERE 1=1
+    '''
+    params = []
+
+    if account_id:
+        sql += ' AND n.account_id = ?'
+        params.append(account_id)
+    if region:
+        sql += ' AND n.region_id = ?'
+        params.append(region)
+    if status:
+        sql += ' AND n.status = ?'
+        params.append(status)
+    if keyword:
+        sql += ' AND (n.instance_id LIKE ? OR n.name LIKE ?)'
+        kw = f'%{keyword}%'
+        params.extend([kw, kw])
+
+    sql += ' ORDER BY n.created_time DESC, n.account_id, n.region_id'
+
+    cursor.execute(sql, params)
+    instances = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return jsonify(instances)
+
+
+@app.route('/api/security-events', methods=['GET'])
+def api_get_security_events():
+    """获取云安全中心-安全事件列表（从数据库读取）"""
+    account_id = request.args.get('account_id')
+    days = request.args.get('days', '30')  # 默认查询最近30天
+    level = request.args.get('level', '').strip()  # 告警级别: serious, suspicious, remind
+    status = request.args.get('status', '').strip()  # 处理状态: 0-待处理, 1-已处理, 6-已忽略
+
+    try:
+        # 计算时间范围
+        from_ts = int((datetime.now() - timedelta(days=int(days))).timestamp() * 1000)
+        
+        # 构建查询条件
+        conditions = ['gmt_create >= ?']
+        params = [from_ts]
+        
+        if account_id:
+            conditions.append('account_id = ?')
+            params.append(account_id)
+        if level:
+            conditions.append('level = ?')
+            params.append(level)
+        if status:
+            conditions.append('dealed = ?')
+            params.append(status)
+        
+        where_clause = ' AND '.join(conditions)
+        
+        # 查询数据库并关联账号名称
+        rows = query_db(f'''
+            SELECT se.*, a.name as account_name
+            FROM security_events se
+            JOIN accounts a ON se.account_id = a.id
+            WHERE {where_clause}
+            ORDER BY se.gmt_create DESC
+        ''', params)
+        
+        events = []
+        for row in rows:
+            events.append({
+                'account_id': row['account_id'],
+                'account_name': row['account_name'],
+                'event_name': row['event_name'],
+                'event_type': row['event_type'],
+                'level': row['level'],
+                'instance_name': row['instance_name'],
+                'internet_ip': row['internet_ip'],
+                'intranet_ip': row['intranet_ip'],
+                'gmt_create': row['gmt_create'],
+                'gmt_modified': row['gmt_modified'],
+                'dealed': row['dealed'],
+                'event_status': row['event_status'],
+            })
+        
+        return jsonify(events)
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/oss', methods=['GET'])
 def api_get_oss():
     """获取OSS Bucket列表"""
@@ -1916,7 +2921,11 @@ def _query_rds_renewal_price(access_key_id, access_key_secret, instance_id, regi
         )
         resp = client.describe_price(req)
         if resp.body and resp.body.price_info:
-            return resp.body.price_info.trade_price
+            # 尝试多种可能的响应结构
+            if hasattr(resp.body.price_info, 'trade_price'):
+                return resp.body.price_info.trade_price
+            elif hasattr(resp.body.price_info, 'price') and hasattr(resp.body.price_info.price, 'trade_price'):
+                return resp.body.price_info.price.trade_price
         return None
     except Exception as e:
         app.logger.warning(f"查询RDS {instance_id} 续费价格失败: {str(e)}")
@@ -1939,7 +2948,6 @@ def _query_redis_renewal_price(access_key_id, access_key_secret, instance_id, re
 
         req = kvstore_models.DescribePriceRequest(
             region_id=region_id,
-            instance_type='Redis',
             order_type='RENEW',
             instance_id=instance_id,
             period=1,
@@ -2153,46 +3161,21 @@ def _get_ram_client(account_id):
 
 @app.route('/api/accounts/<int:account_id>/ram/users', methods=['GET'])
 def ram_list_users(account_id):
-    """查询 RAM 用户列表"""
-    client, err = _get_ram_client(account_id)
-    if err:
-        return jsonify({'success': False, 'error': err}), 400
+    """查询 RAM 用户列表（从数据库读取）"""
     try:
-        from alibabacloud_ram20150501 import models as ram_models
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        req = ram_models.ListUsersRequest()
-        resp = client.list_users(req)
+        import json
+        rows = query_db('SELECT * FROM ram_users WHERE account_id = ? ORDER BY user_name', (account_id,))
         users = []
-        if resp.body and resp.body.users and resp.body.users.user:
-            # 先构建基础用户信息
-            for u in resp.body.users.user:
-                users.append({
-                    'user_name': u.user_name,
-                    'user_principal_name': getattr(u, 'user_principal_name', '') or '',
-                    'display_name': u.display_name,
-                    'user_id': u.user_id,
-                    'create_date': str(u.create_date) if u.create_date else '',
-                    'comments': u.comments or '',
-                    'access_keys': [],
-                })
-            # 并发获取每个用户的AccessKey
-            def fetch_access_keys(user_name):
-                try:
-                    ak_req = ram_models.ListAccessKeysRequest(user_name=user_name)
-                    ak_resp = client.list_access_keys(ak_req)
-                    if ak_resp.body and ak_resp.body.access_keys and ak_resp.body.access_keys.access_key:
-                        return user_name, [ak.access_key_id for ak in ak_resp.body.access_keys.access_key]
-                except Exception:
-                    pass
-                return user_name, []
-            with ThreadPoolExecutor(max_workers=min(10, len(users))) as executor:
-                futures = {executor.submit(fetch_access_keys, u['user_name']): u for u in users}
-                for future in as_completed(futures):
-                    user_name, keys = future.result()
-                    for u in users:
-                        if u['user_name'] == user_name:
-                            u['access_keys'] = keys
-                            break
+        for row in rows:
+            users.append({
+                'user_name': row['user_name'],
+                'user_principal_name': row['user_principal_name'] or '',
+                'display_name': row['display_name'] or '',
+                'user_id': row['user_id'] or '',
+                'create_date': row['create_date'] or '',
+                'comments': row['comments'] or '',
+                'access_keys': json.loads(row['access_keys']) if row['access_keys'] else [],
+            })
         return jsonify({'success': True, 'users': users})
     except Exception as e:
         tb = traceback.format_exc()
@@ -2451,67 +3434,21 @@ def _get_dns_client(account_id):
 
 @app.route('/api/accounts/<int:account_id>/dns/domains', methods=['GET'])
 def dns_list_domains(account_id):
-    """查询域名列表，合并 DNS API + 域名 API（含到期时间）"""
-    client, err = _get_dns_client(account_id)
-    if err:
-        return jsonify({'success': False, 'error': err}), 400
+    """查询域名列表（从数据库读取）"""
     try:
-        from alibabacloud_alidns20150109 import models as dns_models
-        req = dns_models.DescribeDomainsRequest()
-        resp = client.describe_domains(req)
+        rows = query_db('SELECT * FROM dns_domains WHERE account_id = ? ORDER BY domain_name', (account_id,))
         domains = []
-        if resp.body and resp.body.domains and resp.body.domains.domain:
-            for d in resp.body.domains.domain:
-                domains.append({
-                    'domain_name': d.domain_name,
-                    'domain_id': d.domain_id,
-                    'record_count': d.record_count if hasattr(d, 'record_count') else 0,
-                    'create_time': str(d.create_time) if hasattr(d, 'create_time') and d.create_time else '',
-                    'end_time': str(d.end_time) if hasattr(d, 'end_time') and d.end_time else '',
-                    'version_name': d.version_name if hasattr(d, 'version_name') else '',
-                    'status': d.domain_status if hasattr(d, 'domain_status') else '',
-                })
-
-        # 用域名 API 补充到期时间和持有者
-        try:
-            from alibabacloud_domain20180129.client import Client as DomainClient
-            from alibabacloud_domain20180129 import models as domain_models
-            from alibabacloud_tea_openapi import models as open_api_models
-
-            row = query_db('SELECT access_key_id, access_key_secret FROM accounts WHERE id = ?', (account_id,), one=True)
-            if row:
-                cfg = open_api_models.Config(access_key_id=row['access_key_id'], access_key_secret=row['access_key_secret'])
-                cfg.endpoint = 'domain.aliyuncs.com'
-                domain_client = DomainClient(cfg)
-                page = 1
-                expiry_map = {}
-                holder_map = {}
-                while True:
-                    qr = domain_models.QueryDomainListRequest(page_num=page, page_size=100)
-                    dr = domain_client.query_domain_list(qr)
-                    if not dr.body or not dr.body.data or not dr.body.data.domain:
-                        break
-                    for dom in dr.body.data.domain:
-                        exp = getattr(dom, 'expiration_date_long', None) or getattr(dom, 'expiration_date', None)
-                        if exp:
-                            expiry_map[dom.domain_name] = str(exp)
-                        holder = getattr(dom, 'ccompany', None) or getattr(dom, 'registrant_type', None)
-                        if holder:
-                            holder_map[dom.domain_name] = str(holder)
-                    if dr.body.total_item_num and page * 100 >= dr.body.total_item_num:
-                        break
-                    page += 1
-                # 合并到期时间和持有者
-                for d in domains:
-                    if not d['end_time'] and d['domain_name'] in expiry_map:
-                        d['end_time'] = expiry_map[d['domain_name']]
-                    if d['domain_name'] in holder_map:
-                        d['holder'] = holder_map[d['domain_name']]
-        except ImportError:
-            print('[WARN] domain SDK 未安装，跳过到期时间和持有者')
-        except Exception as e:
-            print(f'[WARN] 域名 API 查询失败: {e}')
-
+        for row in rows:
+            domains.append({
+                'domain_name': row['domain_name'],
+                'domain_id': row['domain_id'] or '',
+                'record_count': row['record_count'] or 0,
+                'create_time': row['create_time'] or '',
+                'end_time': row['end_time'] or '',
+                'version_name': row['version_name'] or '',
+                'status': row['status'] or '',
+                'holder': row['holder'] or '',
+            })
         return jsonify({'success': True, 'domains': domains})
     except Exception as e:
         tb = traceback.format_exc()
@@ -2707,123 +3644,21 @@ def _get_cas_client(account_id):
 
 @app.route('/api/accounts/<int:account_id>/ssl/certificates', methods=['GET'])
 def ssl_list_certificates(account_id):
-    """查询 SSL 证书列表（V1.0 + V2.0）"""
-    client, err = _get_cas_client(account_id)
-    if err:
-        return jsonify({'success': False, 'error': err}), 400
+    """查询 SSL 证书列表（从数据库读取）"""
     try:
-        from alibabacloud_cas20200407 import models as cas_models
-        import json
-        
+        rows = query_db('SELECT * FROM ssl_certificates WHERE account_id = ? ORDER BY end_date', (account_id,))
         certs = []
-        seen_ids = set()
-        
-        # ===== V1.0: ListUserCertificateOrder =====
-        try:
-            req1 = cas_models.ListUserCertificateOrderRequest(
-                current_page=1,
-                show_size=100
-            )
-            resp1 = client.list_user_certificate_order(req1)
-            if resp1.body and resp1.body.certificate_order_list:
-                for c in resp1.body.certificate_order_list:
-                    raw = {}
-                    if hasattr(c, 'to_map'):
-                        try:
-                            raw = c.to_map()
-                        except:
-                            pass
-                    if not raw:
-                        for k, v in c.__dict__.items():
-                            if not k.startswith('_') and v is not None:
-                                raw[k] = v
-                    
-                    def _pick(d, *keys):
-                        for k in keys:
-                            if k in d and d[k] is not None and d[k] != '':
-                                return d[k]
-                        return ''
-                    
-                    cert_id = str(_pick(raw, 'CertificateId', 'Id', 'id'))
-                    if cert_id and cert_id in seen_ids:
-                        continue
-                    seen_ids.add(cert_id)
-                    
-                    certs.append({
-                        'id': cert_id,
-                        'name': _pick(raw, 'Name', 'CertName'),
-                        'domain': _pick(raw, 'Domain', 'CommonName'),
-                        'status': _pick(raw, 'Status', 'CertStatus'),
-                        'start_date': str(_pick(raw, 'StartDate', 'CertStartTime', 'BuyDate')),
-                        'end_date': str(_pick(raw, 'EndDate', 'CertEndTime', 'ExpireDate')),
-                        'cert_type': _pick(raw, 'CertificateType', 'CertType', 'Type'),
-                        'issuer': _pick(raw, 'BrandName', 'CertBrand', 'Issuer'),
-                    })
-        except Exception as e:
-            app.logger.warning(f'[SSL] V1.0 查询证书订单失败: {e}')
-        
-        # ===== V2.0: ListCertificates =====
-        try:
-            req2 = cas_models.ListCertificatesRequest(
-                current_page=1,
-                show_size=100
-            )
-            resp2 = client.list_certificates(req2)
-            if resp2.body and resp2.body.certificate_list:
-                for c in resp2.body.certificate_list:
-                    raw = {}
-                    if hasattr(c, 'to_map'):
-                        try:
-                            raw = c.to_map()
-                        except:
-                            pass
-                    if not raw:
-                        for k, v in c.__dict__.items():
-                            if not k.startswith('_') and v is not None:
-                                raw[k] = v
-                    
-                    def _pick2(d, *keys):
-                        for k in keys:
-                            if k in d and d[k] is not None and d[k] != '':
-                                return d[k]
-                        return ''
-                    
-                    cert_id = str(_pick2(raw, 'CertificateId', 'certificate_id'))
-                    instance_id = str(_pick2(raw, 'InstanceId', 'instance_id'))
-                    # 按CertificateId 去重，避免V1/V2 重复
-                    if cert_id and cert_id in seen_ids:
-                        continue
-                    seen_ids.add(cert_id)
-                    
-                    # V2.0: NotBefore/NotAfter 秒时间戳
-                    not_before = _pick2(raw, 'NotBefore', 'not_before')
-                    not_after = _pick2(raw, 'NotAfter', 'not_after')
-                    # V2.0: CertificateStatus: issued/revoked/willExpire/expired
-                    cert_status = _pick2(raw, 'CertificateStatus', 'certificate_status')
-                    # 映射状态为中文
-                    status_map = {
-                        'issued': '已签发', 'revoked': '已吊销',
-                        'willExpire': '即将过期', 'expired': '已过期'
-                    }
-                    status = status_map.get(cert_status, cert_status)
-                    # V2.0: CertificateSource: BUY/TEST/UPLOAD
-                    source = _pick2(raw, 'CertificateSource', 'certificate_source')
-                    cert_type_map = {'BUY': '正式证书', 'TEST': '测试证书', 'UPLOAD': '上传证书'}
-                    cert_type = cert_type_map.get(source, source)
-                    
-                    certs.append({
-                        'id': cert_id or instance_id,
-                        'name': _pick2(raw, 'CertificateName', 'certificate_name', 'CommonName'),
-                        'domain': _pick2(raw, 'Domain', 'CommonName'),
-                        'status': status,
-                        'start_date': str(not_before) if not_before else '',
-                        'end_date': str(not_after) if not_after else '',
-                        'cert_type': cert_type,
-                        'issuer': _pick2(raw, 'Issuer', 'issuer'),
-                    })
-        except Exception as e:
-            app.logger.warning(f'[SSL] V2.0 查询证书列表失败: {e}')
-        
+        for row in rows:
+            certs.append({
+                'id': row['cert_id'],
+                'name': row['name'] or '',
+                'domain': row['domain'] or '',
+                'status': row['status'] or '',
+                'start_date': row['start_date'] or '',
+                'end_date': row['end_date'] or '',
+                'cert_type': row['cert_type'] or '',
+                'issuer': row['issuer'] or '',
+            })
         return jsonify({'success': True, 'certificates': certs})
     except Exception as e:
         tb = traceback.format_exc()
@@ -2943,52 +3778,105 @@ def monitor_get_active_alarms(account_id):
         from alibabacloud_cms20190101 import models as cms_models
         import json
         
-        # 获取告警历史（最近24小时内状态为ALARM的事件）
-        import time
-        end_time = int(time.time() * 1000)
-        start_time = end_time - 24 * 3600 * 1000  # 24小时前
-        
-        req = cms_models.DescribeAlertHistoryListRequest(
-            page_size=100,
-            start_time=str(start_time),
-            end_time=str(end_time),
-        )
-        resp = client.describe_alert_history_list(req)
-        
+        # 方法1：使用 DescribeMetricRuleList 获取当前处于告警状态的规则
         active_alarms = []
         seen = {}  # key: (namespace, metric_name, resource) -> index in active_alarms
-        if resp.body and resp.body.alarm_history_list and resp.body.alarm_history_list.alarm_history:
-            for h in resp.body.alarm_history_list.alarm_history:
-                # 只保留仍在告警的，跳过已恢复的
-                h_status = getattr(h, 'status', None)
-                if h_status is not None:
-                    # status可能是字符串"ALARM"/"OK"或整数 1=ALARM / 0=OK
-                    status_str = str(h_status).upper()
-                    if status_str not in ('ALARM', '1'):
-                        continue
+        
+        try:
+            page = 1
+            while True:
+                req = cms_models.DescribeMetricRuleListRequest(
+                    page_size=100,
+                    page=page,
+                    alert_state='ALARM',
+                )
+                resp = client.describe_metric_rule_list(req)
+                if resp.body and resp.body.alarms and resp.body.alarms.alarm:
+                    for h in resp.body.alarms.alarm:
+                        # 解析资源维度
+                        resource_info = ''
+                        if hasattr(h, 'dimensions') and h.dimensions:
+                            try:
+                                dims = json.loads(h.dimensions)
+                                if isinstance(dims, dict):
+                                    resource_info = dims.get('instanceId', '') or dims.get('bucketName', '') or dims.get('port', '') or json.dumps(dims, ensure_ascii=False)
+                                elif isinstance(dims, list) and len(dims) > 0:
+                                    d = dims[0]
+                                    resource_info = d.get('instanceId', '') or d.get('bucketName', '') or json.dumps(d, ensure_ascii=False)
+                            except:
+                                resource_info = h.dimensions
 
-                # 解析资源维度
-                resource_info = ''
-                if hasattr(h, 'dimensions') and h.dimensions:
-                    try:
-                        dims = json.loads(h.dimensions)
-                        if isinstance(dims, dict):
-                            # 提取实例ID
-                            resource_info = dims.get('instanceId', '') or dims.get('bucketName', '') or dims.get('port', '') or json.dumps(dims, ensure_ascii=False)
-                        elif isinstance(dims, list) and len(dims) > 0:
-                            d = dims[0]
-                            resource_info = d.get('instanceId', '') or d.get('bucketName', '') or json.dumps(d, ensure_ascii=False)
-                    except:
-                        resource_info = h.dimensions
+                        alert_time = h.alert_time if hasattr(h, 'alert_time') and h.alert_time else 0
+                        key = (h.namespace or '', h.metric_name or '', resource_info)
 
-                alert_time = h.alert_time if hasattr(h, 'alert_time') and h.alert_time else 0
-                key = (h.namespace or '', h.metric_name or '', resource_info)
+                        if key not in seen:
+                            seen[key] = len(active_alarms)
+                            active_alarms.append({
+                                'rule_name': h.rule_name if hasattr(h, 'rule_name') else '',
+                                'namespace': h.namespace if hasattr(h, 'namespace') else '',
+                                'metric_name': h.metric_name if hasattr(h, 'metric_name') else '',
+                                'expression': h.expression if hasattr(h, 'expression') else '',
+                                'resource': resource_info,
+                                'alarm_time': str(alert_time) if alert_time else '',
+                                'last_time': h.last_time if hasattr(h, 'last_time') else '',
+                                'value': h.value if hasattr(h, 'value') else '',
+                            })
+                
+                total = resp.body.total if hasattr(resp.body, 'total') and resp.body.total else 0
+                if page * 100 >= total:
+                    break
+                page += 1
+        except Exception as e:
+            app.logger.warning(f'[Monitor] DescribeMetricRuleList查询失败: {e}，尝试备用方法')
+        
+        # 方法2：如果方法1没有结果，尝试 DescribeAlertHistoryList
+        if not active_alarms:
+            import time
+            end_time = int(time.time() * 1000)
+            start_time = end_time - 24 * 3600 * 1000  # 24小时前
+            
+            req = cms_models.DescribeAlertHistoryListRequest(
+                page_size=100,
+                start_time=str(start_time),
+                end_time=str(end_time),
+            )
+            resp = client.describe_alert_history_list(req)
+            
+            if resp.body and resp.body.alarm_history_list and resp.body.alarm_history_list.alarm_history:
+                for h in resp.body.alarm_history_list.alarm_history:
+                    # 解析资源维度
+                    resource_info = ''
+                    if hasattr(h, 'dimensions') and h.dimensions:
+                        try:
+                            dims = json.loads(h.dimensions)
+                            if isinstance(dims, dict):
+                                resource_info = dims.get('instanceId', '') or dims.get('bucketName', '') or dims.get('port', '') or json.dumps(dims, ensure_ascii=False)
+                            elif isinstance(dims, list) and len(dims) > 0:
+                                d = dims[0]
+                                resource_info = d.get('instanceId', '') or d.get('bucketName', '') or json.dumps(d, ensure_ascii=False)
+                        except:
+                            resource_info = h.dimensions
 
-                if key in seen:
-                    # 已有此告警，比较时间戳，保留最新的
-                    existing_time = active_alarms[seen[key]]['alarm_time_raw']
-                    if alert_time and alert_time > existing_time:
-                        active_alarms[seen[key]] = {
+                    alert_time = h.alert_time if hasattr(h, 'alert_time') and h.alert_time else 0
+                    key = (h.namespace or '', h.metric_name or '', resource_info)
+
+                    if key in seen:
+                        existing_time = active_alarms[seen[key]].get('alarm_time_raw', 0)
+                        if alert_time and alert_time > existing_time:
+                            active_alarms[seen[key]] = {
+                                'rule_name': h.rule_name if hasattr(h, 'rule_name') else '',
+                                'namespace': h.namespace if hasattr(h, 'namespace') else '',
+                                'metric_name': h.metric_name if hasattr(h, 'metric_name') else '',
+                                'expression': h.expression if hasattr(h, 'expression') else '',
+                                'resource': resource_info,
+                                'alarm_time': str(alert_time) if alert_time else '',
+                                'alarm_time_raw': alert_time,
+                                'last_time': h.last_time if hasattr(h, 'last_time') else '',
+                                'value': h.value if hasattr(h, 'value') else '',
+                            }
+                    else:
+                        seen[key] = len(active_alarms)
+                        active_alarms.append({
                             'rule_name': h.rule_name if hasattr(h, 'rule_name') else '',
                             'namespace': h.namespace if hasattr(h, 'namespace') else '',
                             'metric_name': h.metric_name if hasattr(h, 'metric_name') else '',
@@ -2998,20 +3886,7 @@ def monitor_get_active_alarms(account_id):
                             'alarm_time_raw': alert_time,
                             'last_time': h.last_time if hasattr(h, 'last_time') else '',
                             'value': h.value if hasattr(h, 'value') else '',
-                        }
-                else:
-                    seen[key] = len(active_alarms)
-                    active_alarms.append({
-                        'rule_name': h.rule_name if hasattr(h, 'rule_name') else '',
-                        'namespace': h.namespace if hasattr(h, 'namespace') else '',
-                        'metric_name': h.metric_name if hasattr(h, 'metric_name') else '',
-                        'expression': h.expression if hasattr(h, 'expression') else '',
-                        'resource': resource_info,
-                        'alarm_time': str(alert_time) if alert_time else '',
-                        'alarm_time_raw': alert_time,
-                        'last_time': h.last_time if hasattr(h, 'last_time') else '',
-                        'value': h.value if hasattr(h, 'value') else '',
-                    })
+                        })
 
         # 按告警时间降序（最新在前）
         active_alarms.sort(key=lambda x: x.get('alarm_time_raw', 0) or 0, reverse=True)
@@ -3136,6 +4011,38 @@ def api_update_auto_sync():
     return jsonify({'success': True, 'message': msg})
 
 
+# ---------- 菜单顺序管理 ----------
+
+@app.route('/api/menu-order', methods=['GET'])
+def api_get_menu_order():
+    """获取菜单顺序"""
+    row = query_db('SELECT value FROM system_settings WHERE key = ?', ('menu_order',), one=True)
+    if row and row['value']:
+        try:
+            import json
+            order = json.loads(row['value'])
+            return jsonify({'order': order})
+        except:
+            pass
+    return jsonify({'order': None})
+
+
+@app.route('/api/menu-order', methods=['PUT'])
+def api_update_menu_order():
+    """更新菜单顺序"""
+    data = request.get_json()
+    order = data.get('order', [])
+    if not isinstance(order, list):
+        return jsonify({'error': '参数格式错误'}), 400
+
+    import json
+    execute_db(
+        'INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)',
+        ('menu_order', json.dumps(order), datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    )
+    return jsonify({'success': True})
+
+
 # ---------- 默认区域管理 ----------
 
 def get_default_regions():
@@ -3146,6 +4053,18 @@ def get_default_regions():
     regions = [row['region_id'] for row in cursor.fetchall()]
     conn.close()
     return regions if regions else ['cn-hangzhou', 'cn-shanghai', 'cn-beijing', 'cn-chengdu', 'ap-southeast-1']
+
+
+def get_network_regions():
+    """获取网络资源同步的区域列表（更全面）"""
+    return [
+        'cn-qingdao', 'cn-beijing', 'cn-zhangjiakou', 'cn-huhehaote', 'cn-wulanchabu',
+        'cn-hangzhou', 'cn-shanghai', 'cn-nanjing', 'cn-fuzhou', 'cn-shenzhen',
+        'cn-heyuan', 'cn-guangzhou', 'cn-chengdu', 'cn-hongkong',
+        'ap-northeast-1', 'ap-southeast-1', 'ap-southeast-2', 'ap-southeast-3',
+        'ap-southeast-5', 'ap-south-1', 'us-east-1', 'us-west-1',
+        'eu-west-1', 'eu-central-1', 'me-east-1'
+    ]
 
 
 @app.route('/api/default-regions', methods=['GET'])

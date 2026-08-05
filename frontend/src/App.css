@@ -80,6 +80,20 @@ body {
   overflow: hidden;
 }
 
+.sidebar-menu-item[draggable] {
+  cursor: grab;
+}
+
+.sidebar-menu-item.dragging {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+
+.sidebar-menu-item.drag-over {
+  background: rgba(99,102,241,0.35);
+  border-top: 2px solid #818cf8;
+}
+
 .sidebar-menu-item::before {
   content: '';
   position: absolute;
@@ -235,6 +249,12 @@ body {
   font-weight: 500;
 }
 
+.summary-card .card-trend {
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
 .summary-card.highlight {
   border-left: 3px solid #10b981;
   background: linear-gradient(135deg, rgba(255,255,255,0.9), rgba(16,185,129,0.04));
@@ -317,7 +337,7 @@ body {
   color: #475569;
   border-bottom: 1px solid #e2e8f0;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: 14px;
   letter-spacing: 0.3px;
 }
 
@@ -398,7 +418,7 @@ body {
 
 .inner-table th {
   background: linear-gradient(180deg, #f8fafc, #f1f5f9);
-  font-size: 13px;
+  font-size: 14px;
   padding: 14px 18px;
   color: #475569;
 }
@@ -1202,6 +1222,25 @@ button:disabled {
   color: #64748b;
   margin-top: 6px;
   text-align: center;
+}
+
+.bar-trend {
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 2px;
+  white-space: nowrap;
+}
+
+.bar-trend.trend-up {
+  color: #ef4444;
+}
+
+.bar-trend.trend-down {
+  color: #10b981;
+}
+
+.bar-trend.trend-flat {
+  color: #94a3b8;
 }
 
 /* ==================== Toast 通知 ==================== */

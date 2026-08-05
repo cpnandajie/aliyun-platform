@@ -1,0 +1,689 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>阿里云资源与账单管理平台</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>☁</text></svg>">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    :root {
+      --primary: #6366f1; --primary-dark: #4f46e5; --accent: #06b6d4;
+      --bg-dark: #0f172a; --bg-card: rgba(255,255,255,0.05);
+      --text: #e2e8f0; --text-muted: #94a3b8;
+    }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      background: var(--bg-dark); color: var(--text); overflow-x: hidden;
+    }
+    ::selection { background: rgba(99,102,241,0.4); }
+    #particles-canvas {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none;
+    }
+    /* ===== Navbar ===== */
+    .navbar {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      padding: 16px 48px; display: flex; align-items: center; justify-content: space-between;
+      backdrop-filter: blur(20px); background: rgba(15,23,42,0.7);
+      border-bottom: 1px solid rgba(255,255,255,0.06); transition: all 0.3s;
+    }
+    .navbar.scrolled { padding: 10px 48px; background: rgba(15,23,42,0.95); box-shadow: 0 4px 30px rgba(0,0,0,0.3); }
+    .nav-logo { display: flex; align-items: center; gap: 12px; font-size: 20px; font-weight: 700; }
+    .nav-logo .logo-icon {
+      width: 36px; height: 36px; border-radius: 10px;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      display: flex; align-items: center; justify-content: center; font-size: 18px;
+    }
+    .nav-links { display: flex; gap: 32px; }
+    .nav-links a { color: var(--text-muted); text-decoration: none; font-size: 14px; font-weight: 500; transition: color 0.2s; position: relative; }
+    .nav-links a::after { content: ''; position: absolute; bottom: -4px; left: 0; width: 0; height: 2px; background: linear-gradient(90deg, var(--primary), var(--accent)); transition: width 0.3s; }
+    .nav-links a:hover { color: #fff; }
+    .nav-links a:hover::after { width: 100%; }
+    .nav-cta {
+      padding: 10px 24px; border-radius: 10px; font-size: 14px; font-weight: 600;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      color: #fff; text-decoration: none; transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .nav-cta:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(99,102,241,0.4); }
+    /* ===== Hero ===== */
+    .hero {
+      position: relative; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      text-align: center; padding: 120px 24px 80px; z-index: 1;
+    }
+    .hero-content { max-width: 800px; }
+    .hero-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 6px 16px; border-radius: 20px; font-size: 13px; font-weight: 500;
+      background: rgba(99,102,241,0.15); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.3);
+      margin-bottom: 24px; animation: badge-glow 3s ease-in-out infinite;
+    }
+    @keyframes badge-glow {
+      0%,100% { box-shadow: 0 0 10px rgba(99,102,241,0.1); }
+      50% { box-shadow: 0 0 20px rgba(99,102,241,0.25); }
+    }
+    .hero-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: #22c55e; animation: pulse-dot 2s infinite; }
+    @keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .hero h1 {
+      font-size: clamp(36px, 6vw, 64px); font-weight: 800; line-height: 1.1;
+      letter-spacing: -1px; margin-bottom: 24px;
+      background: linear-gradient(135deg, #fff 0%, #a5b4fc 50%, #06b6d4 100%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+      background-size: 200% 200%; animation: gradient-shift 6s ease infinite;
+    }
+    @keyframes gradient-shift { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+    .hero .subtitle { font-size: 18px; color: var(--text-muted); line-height: 1.7; margin-bottom: 40px; max-width: 600px; margin-left: auto; margin-right: auto; }
+    .hero .subtitle .typed-cursor { animation: blink 1s infinite; color: var(--accent); }
+    @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+    .hero-buttons { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+    .btn-hero-primary {
+      padding: 14px 36px; border-radius: 12px; font-size: 16px; font-weight: 600;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      color: #fff; text-decoration: none; transition: all 0.3s; border: none; cursor: pointer;
+      position: relative; overflow: hidden;
+    }
+    .btn-hero-primary::before {
+      content: ''; position: absolute; top: 0; left: -100%; width: 100%; height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+      transition: left 0.5s;
+    }
+    .btn-hero-primary:hover::before { left: 100%; }
+    .btn-hero-primary:hover { transform: translateY(-3px); box-shadow: 0 12px 40px rgba(99,102,241,0.4); }
+    .btn-hero-secondary {
+      padding: 14px 36px; border-radius: 12px; font-size: 16px; font-weight: 600;
+      background: rgba(255,255,255,0.06); color: #fff; text-decoration: none;
+      border: 1px solid rgba(255,255,255,0.12); transition: all 0.3s; cursor: pointer;
+    }
+    .btn-hero-secondary:hover { background: rgba(255,255,255,0.1); transform: translateY(-3px); }
+    /* ===== Stats ===== */
+    .stats { display: flex; justify-content: center; gap: 48px; margin-top: 64px; flex-wrap: wrap; }
+    .stat-item { text-align: center; }
+    .stat-number {
+      font-size: 42px; font-weight: 800;
+      background: linear-gradient(135deg, #a5b4fc, #06b6d4);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+    }
+    .stat-label { font-size: 14px; color: var(--text-muted); margin-top: 4px; }
+    /* ===== Scroll Indicator ===== */
+    .scroll-indicator {
+      position: absolute; bottom: 32px; left: 50%; transform: translateX(-50%);
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      color: var(--text-muted); font-size: 12px; animation: bounce-down 2s infinite;
+    }
+    .scroll-indicator .mouse {
+      width: 24px; height: 38px; border: 2px solid rgba(255,255,255,0.2); border-radius: 12px;
+      position: relative;
+    }
+    .scroll-indicator .mouse::before {
+      content: ''; position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+      width: 3px; height: 8px; border-radius: 2px; background: var(--accent);
+      animation: scroll-wheel 2s infinite;
+    }
+    @keyframes scroll-wheel { 0% { opacity: 1; top: 8px; } 100% { opacity: 0; top: 22px; } }
+    @keyframes bounce-down { 0%,100% { transform: translateX(-50%) translateY(0); } 50% { transform: translateX(-50%) translateY(8px); } }
+    /* ===== Sections ===== */
+    section { position: relative; z-index: 1; padding: 100px 24px; }
+    .section-title {
+      text-align: center; font-size: clamp(28px, 4vw, 40px); font-weight: 800;
+      letter-spacing: -0.5px; margin-bottom: 16px;
+    }
+    .section-subtitle { text-align: center; font-size: 16px; color: var(--text-muted); max-width: 600px; margin: 0 auto 60px; line-height: 1.7; }
+    /* ===== Features ===== */
+    .features-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 24px; max-width: 1200px; margin: 0 auto;
+    }
+    .feature-card {
+      padding: 32px; border-radius: 16px;
+      background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+      transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1); position: relative; overflow: hidden;
+    }
+    .feature-card::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+      background: linear-gradient(90deg, transparent, var(--primary), var(--accent), transparent);
+      opacity: 0; transition: opacity 0.3s;
+    }
+    .feature-card::after {
+      content: ''; position: absolute; top: -50%; left: -50%; width: 200%; height: 200%;
+      background: radial-gradient(circle, rgba(99,102,241,0.06) 0%, transparent 70%);
+      opacity: 0; transition: opacity 0.3s; pointer-events: none;
+    }
+    .feature-card:hover { background: rgba(255,255,255,0.06); transform: translateY(-6px); border-color: rgba(99,102,241,0.3); }
+    .feature-card:hover::before { opacity: 1; }
+    .feature-card:hover::after { opacity: 1; }
+    .feature-icon {
+      width: 48px; height: 48px; border-radius: 12px; font-size: 22px;
+      display: flex; align-items: center; justify-content: center; margin-bottom: 20px;
+    }
+    .feature-icon.blue { background: rgba(99,102,241,0.15); }
+    .feature-icon.cyan { background: rgba(6,182,212,0.15); }
+    .feature-icon.green { background: rgba(34,197,94,0.15); }
+    .feature-icon.orange { background: rgba(249,115,22,0.15); }
+    .feature-icon.pink { background: rgba(236,72,153,0.15); }
+    .feature-icon.purple { background: rgba(168,85,247,0.15); }
+    .feature-icon.teal { background: rgba(20,184,166,0.15); }
+    .feature-icon.red { background: rgba(239,68,68,0.15); }
+    .feature-card h3 { font-size: 18px; font-weight: 700; margin-bottom: 10px; }
+    .feature-card p { font-size: 14px; color: var(--text-muted); line-height: 1.7; }
+    .feature-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 16px; }
+    .feature-tag { padding: 3px 10px; border-radius: 6px; font-size: 12px; background: rgba(255,255,255,0.06); color: var(--text-muted); }
+    /* ===== Architecture ===== */
+    .tech-section { background: rgba(255,255,255,0.02); }
+    .arch-flow {
+      display: flex; align-items: center; justify-content: center; gap: 12px;
+      flex-wrap: wrap; max-width: 1000px; margin: 0 auto;
+    }
+    .arch-box {
+      padding: 24px 28px; border-radius: 16px; text-align: center; min-width: 170px;
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+      transition: all 0.3s; position: relative;
+    }
+    .arch-box:hover { background: rgba(99,102,241,0.1); border-color: rgba(99,102,241,0.3); transform: translateY(-4px); }
+    .arch-box .arch-icon { font-size: 32px; margin-bottom: 10px; }
+    .arch-box .arch-label { font-size: 15px; font-weight: 700; }
+    .arch-box .arch-desc { font-size: 12px; color: var(--text-muted); margin-top: 6px; line-height: 1.5; }
+    .arch-arrow { font-size: 20px; color: rgba(99,102,241,0.5); animation: arrow-pulse 2s infinite; }
+    @keyframes arrow-pulse { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
+    /* ===== Tech Stack ===== */
+    .tech-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px; max-width: 900px; margin: 0 auto;
+    }
+    .tech-item {
+      display: flex; align-items: center; gap: 12px; padding: 16px 20px; border-radius: 12px;
+      background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); transition: all 0.2s;
+    }
+    .tech-item:hover { background: rgba(255,255,255,0.08); transform: translateX(4px); border-color: rgba(99,102,241,0.2); }
+    .tech-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .tech-item span { font-size: 14px; font-weight: 500; }
+    /* ===== Screenshots ===== */
+    .screenshots-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+      gap: 24px; max-width: 1200px; margin: 0 auto;
+    }
+    .screenshot-card {
+      border-radius: 16px; overflow: hidden;
+      background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+      transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .screenshot-card:hover { transform: translateY(-8px); border-color: rgba(99,102,241,0.3); box-shadow: 0 24px 60px rgba(0,0,0,0.4); }
+    .screenshot-browser {
+      background: #1e293b; padding: 10px 14px; display: flex; align-items: center; gap: 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    .screenshot-dots { display: flex; gap: 5px; }
+    .screenshot-dots span { width: 8px; height: 8px; border-radius: 50%; }
+    .screenshot-dots span:nth-child(1) { background: #ef4444; }
+    .screenshot-dots span:nth-child(2) { background: #f59e0b; }
+    .screenshot-dots span:nth-child(3) { background: #22c55e; }
+    .screenshot-url {
+      flex: 1; padding: 4px 12px; border-radius: 6px; font-size: 11px; color: var(--text-muted);
+      background: rgba(255,255,255,0.06); text-align: center;
+    }
+    .screenshot-img {
+      width: 100%; aspect-ratio: 16/9; object-fit: cover; display: block;
+    }
+    .screenshot-info { padding: 20px; }
+    .screenshot-info h3 { font-size: 16px; font-weight: 700; margin-bottom: 6px; }
+    .screenshot-info p { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
+    /* ===== Deploy Steps ===== */
+    .steps-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 24px; max-width: 1000px; margin: 0 auto; position: relative;
+    }
+    .step-card {
+      text-align: center; padding: 32px 24px; border-radius: 16px;
+      background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06);
+      transition: all 0.3s; position: relative;
+    }
+    .step-card:hover { background: rgba(255,255,255,0.06); transform: translateY(-4px); }
+    .step-number {
+      width: 48px; height: 48px; border-radius: 50%; margin: 0 auto 16px;
+      background: linear-gradient(135deg, var(--primary), var(--accent));
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; font-weight: 800; color: #fff;
+    }
+    .step-card h3 { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+    .step-card p { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
+    .step-card .step-cmd {
+      display: inline-block; margin-top: 12px; padding: 6px 14px; border-radius: 8px;
+      background: rgba(0,0,0,0.3); font-family: 'JetBrains Mono', monospace; font-size: 12px;
+      color: #a5b4fc; border: 1px solid rgba(255,255,255,0.06);
+    }
+    /* ===== CTA ===== */
+    .cta-section {
+      text-align: center; padding: 100px 24px;
+      background: linear-gradient(180deg, transparent, rgba(99,102,241,0.05), transparent);
+    }
+    .cta-section h2 { font-size: clamp(28px, 4vw, 40px); font-weight: 800; margin-bottom: 16px; }
+    .cta-section p { font-size: 16px; color: var(--text-muted); margin-bottom: 40px; }
+    .cta-code-wrap {
+      display: inline-flex; align-items: center; gap: 0; margin-bottom: 32px;
+      border-radius: 12px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1);
+    }
+    .cta-code {
+      padding: 16px 24px; background: rgba(0,0,0,0.4);
+      font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 14px; color: #a5b4fc;
+    }
+    .cta-copy {
+      padding: 16px 20px; background: rgba(99,102,241,0.15); border: none; cursor: pointer;
+      color: #a5b4fc; font-size: 16px; transition: all 0.2s; border-left: 1px solid rgba(255,255,255,0.1);
+    }
+    .cta-copy:hover { background: rgba(99,102,241,0.3); }
+    .cta-copy.copied { color: #22c55e; }
+    /* ===== Footer ===== */
+    footer {
+      position: relative; z-index: 1; text-align: center; padding: 40px 24px;
+      border-top: 1px solid rgba(255,255,255,0.06); font-size: 13px; color: var(--text-muted);
+    }
+    footer a { color: #a5b4fc; text-decoration: none; }
+    footer a:hover { color: #fff; }
+    /* ===== Back to Top ===== */
+    .back-to-top {
+      position: fixed; bottom: 32px; right: 32px; z-index: 99;
+      width: 44px; height: 44px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);
+      background: rgba(15,23,42,0.8); backdrop-filter: blur(12px);
+      color: var(--text-muted); font-size: 18px; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      opacity: 0; transform: translateY(20px); transition: all 0.3s; pointer-events: none;
+    }
+    .back-to-top.visible { opacity: 1; transform: translateY(0); pointer-events: auto; }
+    .back-to-top:hover { background: rgba(99,102,241,0.2); color: #fff; border-color: rgba(99,102,241,0.3); }
+    /* ===== Animations ===== */
+    .fade-up { opacity: 0; transform: translateY(30px); transition: opacity 0.7s ease, transform 0.7s ease; }
+    .fade-up.visible { opacity: 1; transform: translateY(0); }
+    .fade-up-delay-1 { transition-delay: 0.1s; }
+    .fade-up-delay-2 { transition-delay: 0.2s; }
+    .fade-up-delay-3 { transition-delay: 0.3s; }
+    /* ===== Glow Orbs ===== */
+    .glow-orb {
+      position: absolute; border-radius: 50%; filter: blur(100px); opacity: 0.12; pointer-events: none; z-index: 0;
+    }
+    .glow-orb-1 { width: 500px; height: 500px; background: var(--primary); top: 5%; left: 5%; animation: orb-float 15s ease-in-out infinite; }
+    .glow-orb-2 { width: 400px; height: 400px; background: var(--accent); top: 25%; right: 5%; animation: orb-float 18s ease-in-out infinite reverse; }
+    .glow-orb-3 { width: 450px; height: 450px; background: #a855f7; bottom: 15%; left: 25%; animation: orb-float 20s ease-in-out infinite; }
+    @keyframes orb-float {
+      0%,100% { transform: translate(0, 0); }
+      33% { transform: translate(30px, -20px); }
+      66% { transform: translate(-20px, 15px); }
+    }
+    /* ===== Responsive ===== */
+    @media (max-width: 768px) {
+      .navbar { padding: 12px 20px; }
+      .nav-links { display: none; }
+      .stats { gap: 24px; }
+      .stat-number { font-size: 32px; }
+      .arch-flow { flex-direction: column; }
+      .arch-arrow { transform: rotate(90deg); }
+      .screenshots-grid { grid-template-columns: 1fr; }
+      .scroll-indicator { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="particles-canvas"></canvas>
+  <div class="glow-orb glow-orb-1"></div>
+  <div class="glow-orb glow-orb-2"></div>
+  <div class="glow-orb glow-orb-3"></div>
+
+  <!-- Navbar -->
+  <nav class="navbar" id="navbar">
+    <div class="nav-logo">
+      <div class="logo-icon">☁</div>
+      <span>CloudManager</span>
+    </div>
+    <div class="nav-links">
+      <a href="#features">功能</a>
+      <a href="#architecture">架构</a>
+      <a href="#tech">技术栈</a>
+      <a href="#screenshots">截图</a>
+      <a href="#deploy">部署</a>
+    </div>
+    <a href="/#/overview" class="nav-cta">进入系统</a>
+  </nav>
+
+  <!-- Back to Top -->
+  <button class="back-to-top" id="backToTop" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</button>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="hero-content fade-up">
+      <div class="hero-badge"><span class="dot"></span> 开源 · 轻量 · 一站式</div>
+      <h1>阿里云资源与账单<br>管理平台</h1>
+      <p class="subtitle" id="typed-subtitle"></p>
+      <div class="hero-buttons">
+        <a href="/#/overview" class="btn-hero-primary">🚀 进入系统</a>
+        <a href="#features" class="btn-hero-secondary">了解更多 ↓</a>
+      </div>
+      <div class="stats">
+        <div class="stat-item"><div class="stat-number" id="counter-modules">0</div><div class="stat-label">功能模块</div></div>
+        <div class="stat-item"><div class="stat-number" id="counter-resources">0</div><div class="stat-label">云资源类型</div></div>
+        <div class="stat-item"><div class="stat-number" id="counter-regions">0</div><div class="stat-label">支持区域</div></div>
+        <div class="stat-item"><div class="stat-number" id="counter-deploy">0</div><div class="stat-label">键部署</div></div>
+      </div>
+    </div>
+    <div class="scroll-indicator">
+      <div class="mouse"></div>
+      <span>向下滚动</span>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section id="features">
+    <div class="section-title fade-up">强大功能，一应俱全</div>
+    <div class="section-subtitle fade-up">覆盖阿里云核心场景，多账号数据实时同步，统一视图一目了然</div>
+    <div class="features-grid">
+      <div class="feature-card fade-up">
+        <div class="feature-icon blue">📊</div>
+        <h3>资源概览</h3>
+        <p>汇总展示所有账号的 ECS、RDS、SLB、OSS、Redis 实例数量，本月消费和可用额度实时统计，低余额自动预警。</p>
+        <div class="feature-tags"><span class="feature-tag">ECS</span><span class="feature-tag">RDS</span><span class="feature-tag">SLB</span><span class="feature-tag">OSS</span><span class="feature-tag">Redis</span></div>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon cyan">🖥️</div>
+        <h3>资源管理</h3>
+        <p>多账号资源统一视图，支持按账号、地域筛选，查看实例详情（IP、状态、规格、到期时间），数据一键同步。</p>
+        <div class="feature-tags"><span class="feature-tag">多账号</span><span class="feature-tag">地域筛选</span><span class="feature-tag">一键同步</span></div>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon green">💰</div>
+        <h3>账单管理</h3>
+        <p>月度账单查询、历史账单对比、按账号筛选、消费趋势分析，轻松掌控每一笔开支。</p>
+        <div class="feature-tags"><span class="feature-tag">月度账单</span><span class="feature-tag">趋势分析</span><span class="feature-tag">多账号</span></div>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon orange">👤</div>
+        <h3>RAM 管理</h3>
+        <p>RAM 用户创建/删除、密码重置、AccessKey 管理、权限策略附加/移除，支持多字段搜索。</p>
+        <div class="feature-tags"><span class="feature-tag">用户管理</span><span class="feature-tag">权限策略</span><span class="feature-tag">AccessKey</span></div>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon pink">🌐</div>
+        <h3>域名管理</h3>
+        <p>域名列表按持有者筛选、到期提醒、解析记录增删改查、按主机记录搜索，快速管理 DNS。</p>
+        <div class="feature-tags"><span class="feature-tag">DNS</span><span class="feature-tag">到期提醒</span><span class="feature-tag">解析记录</span></div>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon purple">🔒</div>
+        <h3>SSL 证书</h3>
+        <p>证书列表查看、到期监控、证书详情（域名、颁发机构、有效期），多账号证书统一管理。</p>
+        <div class="feature-tags"><span class="feature-tag">SSL</span><span class="feature-tag">到期监控</span><span class="feature-tag">多账号</span></div>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon teal">📡</div>
+        <h3>云监控</h3>
+        <p>活跃告警查询、历史告警查看、多账号告警统一视图，按规则名称、命名空间、资源筛选。</p>
+        <div class="feature-tags"><span class="feature-tag">活跃告警</span><span class="feature-tag">历史告警</span><span class="feature-tag">统一视图</span></div>
+      </div>
+      <div class="feature-card fade-up">
+        <div class="feature-icon red">📋</div>
+        <h3>日志管理 & 平台设置</h3>
+        <p>全操作日志记录，支持多条件筛选；平台设置可配置同步区域、自动同步策略。</p>
+        <div class="feature-tags"><span class="feature-tag">操作日志</span><span class="feature-tag">同步配置</span><span class="feature-tag">区域管理</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Architecture -->
+  <section id="architecture" class="tech-section">
+    <div class="section-title fade-up">系统架构</div>
+    <div class="section-subtitle fade-up">轻量级全栈架构，一键部署，开箱即用</div>
+    <div class="arch-flow fade-up">
+      <div class="arch-box">
+        <div class="arch-icon">☁️</div>
+        <div class="arch-label">阿里云 API</div>
+        <div class="arch-desc">ECS / RDS / SLB / OSS<br>RAM / DNS / CAS / CMS / BSS</div>
+      </div>
+      <div class="arch-arrow">→</div>
+      <div class="arch-box">
+        <div class="arch-icon">⚡</div>
+        <div class="arch-label">Flask 后端</div>
+        <div class="arch-desc">数据同步 · REST API<br>定时任务 · 自动备份</div>
+      </div>
+      <div class="arch-arrow">→</div>
+      <div class="arch-box">
+        <div class="arch-icon">💾</div>
+        <div class="arch-label">SQLite</div>
+        <div class="arch-desc">轻量存储 · 零配置<br>自动建表 · 数据备份</div>
+      </div>
+      <div class="arch-arrow">→</div>
+      <div class="arch-box">
+        <div class="arch-icon">🎨</div>
+        <div class="arch-label">React 前端</div>
+        <div class="arch-desc">Vite 构建 · 响应式设计<br>骨架屏 · 粒子动画</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Tech Stack -->
+  <section id="tech">
+    <div class="section-title fade-up">技术栈</div>
+    <div class="section-subtitle fade-up">现代化技术选型，稳定可靠</div>
+    <div class="tech-grid fade-up">
+      <div class="tech-item"><div class="tech-dot" style="background:#61dafb"></div><span>React 18</span></div>
+      <div class="tech-item"><div class="tech-dot" style="background:#646cff"></div><span>Vite 5</span></div>
+      <div class="tech-item"><div class="tech-dot" style="background:#000;border:1px solid #555"></div><span>React Router 6</span></div>
+      <div class="tech-item"><div class="tech-dot" style="background:#3776ab"></div><span>Python 3.8+</span></div>
+      <div class="tech-item"><div class="tech-dot" style="background:#000;border:1px solid #555"></div><span>Flask 2.3</span></div>
+      <div class="tech-item"><div class="tech-dot" style="background:#003b57"></div><span>SQLite</span></div>
+      <div class="tech-item"><div class="tech-dot" style="background:#ff6c00"></div><span>APScheduler</span></div>
+      <div class="tech-item"><div class="tech-dot" style="background:#ff9900"></div><span>阿里云 SDK</span></div>
+      <div class="tech-item"><div class="tech-dot" style="background:#333"></div><span>PM2</span></div>
+      <div class="tech-item"><div class="tech-dot" style="background:#009639"></div><span>Nginx</span></div>
+    </div>
+  </section>
+
+  <!-- Screenshots -->
+  <section id="screenshots" class="tech-section">
+    <div class="section-title fade-up">界面预览</div>
+    <div class="section-subtitle fade-up">简洁直观的交互设计，让管理变得轻松</div>
+    <div class="screenshots-grid fade-up">
+      <div class="screenshot-card">
+        <div class="screenshot-browser">
+          <div class="screenshot-dots"><span></span><span></span><span></span></div>
+          <div class="screenshot-url">localhost:5001 — 资源概览</div>
+        </div>
+        <img class="screenshot-img" src="./images/overview.png" alt="资源概览" onerror="this.style.display='none';this.parentElement.querySelector('.screenshot-fallback').style.display='flex'">
+        <div class="screenshot-fallback" style="display:none;aspect-ratio:16/9;background:linear-gradient(135deg,rgba(99,102,241,0.15),rgba(6,182,212,0.15));align-items:center;justify-content:center;font-size:48px">📊</div>
+        <div class="screenshot-info"><h3>资源概览</h3><p>多账号资源汇总，消费与余额一目了然，低余额自动预警</p></div>
+      </div>
+      <div class="screenshot-card">
+        <div class="screenshot-browser">
+          <div class="screenshot-dots"><span></span><span></span><span></span></div>
+          <div class="screenshot-url">localhost:5001 — 资源管理</div>
+        </div>
+        <img class="screenshot-img" src="./images/resources.png" alt="资源管理" onerror="this.style.display='none';this.parentElement.querySelector('.screenshot-fallback').style.display='flex'">
+        <div class="screenshot-fallback" style="display:none;aspect-ratio:16/9;background:linear-gradient(135deg,rgba(34,197,94,0.15),rgba(6,182,212,0.15));align-items:center;justify-content:center;font-size:48px">🖥️</div>
+        <div class="screenshot-info"><h3>资源管理</h3><p>统一视图管理所有云资源实例，支持多账号、多地域筛选</p></div>
+      </div>
+      <div class="screenshot-card">
+        <div class="screenshot-browser">
+          <div class="screenshot-dots"><span></span><span></span><span></span></div>
+          <div class="screenshot-url">localhost:5001 — RAM 管理</div>
+        </div>
+        <img class="screenshot-img" src="./images/ram.png" alt="RAM 管理" onerror="this.style.display='none';this.parentElement.querySelector('.screenshot-fallback').style.display='flex'">
+        <div class="screenshot-fallback" style="display:none;aspect-ratio:16/9;background:linear-gradient(135deg,rgba(168,85,247,0.15),rgba(236,72,153,0.15));align-items:center;justify-content:center;font-size:48px">👤</div>
+        <div class="screenshot-info"><h3>RAM 管理</h3><p>用户、权限、AccessKey 一站式管理，支持多字段搜索</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Deploy Steps -->
+  <section id="deploy">
+    <div class="section-title fade-up">快速部署</div>
+    <div class="section-subtitle fade-up">四步完成部署，五分钟即可开始使用</div>
+    <div class="steps-grid fade-up">
+      <div class="step-card">
+        <div class="step-number">1</div>
+        <h3>克隆仓库</h3>
+        <p>从 GitHub 获取项目源码</p>
+        <div class="step-cmd">git clone ...</div>
+      </div>
+      <div class="step-card">
+        <div class="step-number">2</div>
+        <h3>环境检查</h3>
+        <p>自动检测 Python 和 Node.js</p>
+        <div class="step-cmd">python & node</div>
+      </div>
+      <div class="step-card">
+        <div class="step-number">3</div>
+        <h3>安装依赖</h3>
+        <p>一键安装前后端依赖并构建</p>
+        <div class="step-cmd">npm install</div>
+      </div>
+      <div class="step-card">
+        <div class="step-number">4</div>
+        <h3>启动服务</h3>
+        <p>PM2 进程管理，开箱即用</p>
+        <div class="step-cmd">pm2 start</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta-section">
+    <div class="fade-up">
+      <h2>五分钟快速部署</h2>
+      <p>一键启动脚本，自动完成环境检查、依赖安装和服务启动</p>
+      <div class="cta-code-wrap">
+        <div class="cta-code" id="cta-code-text">git clone https://github.com/cpnandajie/aliyun-platform.git && cd aliyun-platform && start.bat</div>
+        <button class="cta-copy" id="cta-copy-btn" onclick="copyCode()" title="复制">📋</button>
+      </div>
+      <br>
+      <a href="/#/overview" class="btn-hero-primary">进入系统 →</a>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <p>阿里云资源与账单管理平台 · 
+      <a href="https://github.com/cpnandajie/aliyun-platform" target="_blank">GitHub</a> · 
+      仅供学习和内部使用
+    </p>
+  </footer>
+
+  <script>
+    // ===== Particle Canvas =====
+    const canvas = document.getElementById('particles-canvas');
+    const ctx = canvas.getContext('2d');
+    let particles = [];
+    let mouse = { x: null, y: null };
+    function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+    resize();
+    window.addEventListener('resize', resize);
+    window.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+
+    class Particle {
+      constructor() { this.reset(); }
+      reset() {
+        this.x = Math.random() * canvas.width;
+        this.y = Math.random() * canvas.height;
+        this.size = Math.random() * 1.5 + 0.5;
+        this.speedX = (Math.random() - 0.5) * 0.3;
+        this.speedY = (Math.random() - 0.5) * 0.3;
+        this.opacity = Math.random() * 0.5 + 0.1;
+      }
+      update() {
+        this.x += this.speedX; this.y += this.speedY;
+        if (this.x < 0 || this.x > canvas.width || this.y < 0 || this.y > canvas.height) this.reset();
+        // Mouse interaction
+        if (mouse.x !== null) {
+          const dx = this.x - mouse.x, dy = this.y - mouse.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 100) {
+            this.x += dx * 0.01; this.y += dy * 0.01;
+          }
+        }
+      }
+      draw() {
+        ctx.beginPath(); ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(165,180,252,${this.opacity})`; ctx.fill();
+      }
+    }
+    for (let i = 0; i < 80; i++) particles.push(new Particle());
+
+    function drawLines() {
+      for (let i = 0; i < particles.length; i++) {
+        for (let j = i + 1; j < particles.length; j++) {
+          const dx = particles[i].x - particles[j].x, dy = particles[i].y - particles[j].y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 120) {
+            ctx.beginPath(); ctx.moveTo(particles[i].x, particles[i].y);
+            ctx.lineTo(particles[j].x, particles[j].y);
+            ctx.strokeStyle = `rgba(165,180,252,${0.06 * (1 - dist / 120)})`;
+            ctx.lineWidth = 0.5; ctx.stroke();
+          }
+        }
+      }
+    }
+    function animate() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      particles.forEach(p => { p.update(); p.draw(); });
+      drawLines();
+      requestAnimationFrame(animate);
+    }
+    animate();
+
+    // ===== Typed Subtitle =====
+    const typedText = '多账号统一视图，资源、账单、域名、RAM、SSL 证书、云监控一站式管理。让阿里云管理变得简单高效。';
+    const typedEl = document.getElementById('typed-subtitle');
+    let charIndex = 0;
+    function typeChar() {
+      if (charIndex < typedText.length) {
+        typedEl.innerHTML = typedText.slice(0, charIndex + 1) + '<span class="typed-cursor">|</span>';
+        charIndex++;
+        setTimeout(typeChar, 40);
+      } else {
+        typedEl.innerHTML = typedText + '<span class="typed-cursor">|</span>';
+      }
+    }
+    setTimeout(typeChar, 800);
+
+    // ===== Scroll Animations =====
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => { if (entry.isIntersecting) entry.target.classList.add('visible'); });
+    }, { threshold: 0.1 });
+    document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+
+    // ===== Navbar & Back to Top =====
+    window.addEventListener('scroll', () => {
+      document.getElementById('navbar').classList.toggle('scrolled', window.scrollY > 50);
+      document.getElementById('backToTop').classList.toggle('visible', window.scrollY > 400);
+    });
+
+    // ===== Counter Animation =====
+    function animateCounter(id, target) {
+      const el = document.getElementById(id);
+      let current = 0;
+      const step = Math.max(1, Math.floor(target / 40));
+      const timer = setInterval(() => {
+        current += step;
+        if (current >= target) { current = target; clearInterval(timer); }
+        el.textContent = current;
+      }, 50);
+    }
+    const heroObserver = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          animateCounter('counter-modules', 9);
+          animateCounter('counter-resources', 7);
+          animateCounter('counter-regions', 27);
+          animateCounter('counter-deploy', 1);
+          heroObserver.disconnect();
+        }
+      });
+    }, { threshold: 0.5 });
+    heroObserver.observe(document.querySelector('.stats'));
+
+    // ===== Copy Code =====
+    function copyCode() {
+      const code = document.getElementById('cta-code-text').textContent;
+      navigator.clipboard.writeText(code).then(() => {
+        const btn = document.getElementById('cta-copy-btn');
+        btn.textContent = '✅'; btn.classList.add('copied');
+        setTimeout(() => { btn.textContent = '📋'; btn.classList.remove('copied'); }, 2000);
+      });
+    }
+  </script>
+</body>
+</html>
