@@ -142,6 +142,7 @@ def init_db():
             instance_type TEXT,
             instance_cpu TEXT,
             instance_memory TEXT,
+            instance_storage TEXT,
             status TEXT,
             region_id TEXT,
             connection_mode TEXT,
@@ -298,6 +299,16 @@ def init_db():
             FOREIGN KEY (account_id) REFERENCES accounts(id)
         )
     ''')
+
+    # 迁移：为现有 rds_instances 表添加 instance_storage 字段（如果不存在）
+    try:
+        cursor.execute("PRAGMA table_info(rds_instances)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'instance_storage' not in columns:
+            cursor.execute("ALTER TABLE rds_instances ADD COLUMN instance_storage TEXT")
+            print("[迁移] 已为 rds_instances 表添加 instance_storage 字段")
+    except Exception as e:
+        print(f"[迁移警告] 添加 instance_storage 字段失败: {e}")
 
     conn.commit()
     conn.close()
@@ -769,12 +780,19 @@ def sync_rds(account_id, access_key_id, access_key_secret):
 
                     for inst in instances:
                         try:
+                            # 调试：打印第一个实例的所有字段
+                            if instances.index(inst) == 0:
+                                inst_attrs = [a for a in dir(inst) if not a.startswith('_')]
+                                app.logger.info(f"RDS 实例字段: {inst_attrs}")
+                                app.logger.info(f"RDS CPU相关: {[a for a in inst_attrs if 'cpu' in a.lower()]}")
+                                app.logger.info(f"RDS 存储相关: {[a for a in inst_attrs if 'storage' in a.lower()]}")
+                                app.logger.info(f"RDS memory相关: {[a for a in inst_attrs if 'memory' in a.lower()]}")
                             execute_db('''
                                 INSERT OR REPLACE INTO rds_instances
                                 (account_id, instance_id, instance_name, engine, engine_version,
-                                 instance_type, instance_cpu, instance_memory, status, region_id,
+                                 instance_type, instance_cpu, instance_memory, instance_storage, status, region_id,
                                  connection_mode, created_time, expired_time, updated_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ''', (
                                 account_id, getattr(inst, 'dbinstance_id', getattr(inst, 'db_instance_id', getattr(inst, 'dbinstances_id', ''))),
                                 getattr(inst, 'dbinstance_description', getattr(inst, 'db_instance_description', getattr(inst, 'dbinstances_description', ''))),
@@ -783,6 +801,7 @@ def sync_rds(account_id, access_key_id, access_key_secret):
                                 getattr(inst, 'dbinstance_type', getattr(inst, 'db_instance_type', getattr(inst, 'dbinstances_type', ''))),
                                 getattr(inst, 'dbinstance_cpu', getattr(inst, 'db_instance_cpu', getattr(inst, 'dbinstances_cpu', ''))),
                                 getattr(inst, 'dbinstance_memory', getattr(inst, 'db_instance_memory', getattr(inst, 'dbinstances_memory', ''))),
+                                getattr(inst, 'dbinstance_storage', getattr(inst, 'db_instance_storage', getattr(inst, 'dbinstances_storage', ''))),
                                 getattr(inst, 'dbinstance_status', getattr(inst, 'db_instance_status', getattr(inst, 'dbinstances_status', ''))),
                                 region_id,
                                 getattr(inst, 'connection_mode', ''),
@@ -1753,11 +1772,11 @@ def sync_renewal_prices(account_id, access_key_id, access_key_secret):
         app.logger.info(f"ECS续费价格同步完成: {len(ecs_instances)}个实例")
     
     # RDS续费价格
-    rds_instances = query_db('SELECT instance_id, region_id FROM rds_instances WHERE account_id = ?', (account_id,))
+    rds_instances = query_db('SELECT instance_id, region_id, engine, engine_version FROM rds_instances WHERE account_id = ?', (account_id,))
     if rds_instances:
         def query_rds_price(inst):
             try:
-                price = _query_rds_renewal_price(access_key_id, access_key_secret, inst['instance_id'], inst['region_id'])
+                price = _query_rds_renewal_price(access_key_id, access_key_secret, inst['instance_id'], inst['region_id'], inst['engine'], inst['engine_version'])
                 if price is not None:
                     execute_db('UPDATE rds_instances SET renewal_price = ? WHERE instance_id = ? AND account_id = ?',
                               (price, inst['instance_id'], account_id))
@@ -2073,7 +2092,7 @@ def _run_sync_all_task(task_id, accounts, sync_type):
 import shutil
 
 def backup_database():
-    """备份 SQLite 数据库文件，保留最近 7 天的备份"""
+    """备份 SQLite 数据库文件，保留最近 3 个备份"""
     try:
         if not os.path.exists(DB_PATH):
             return
@@ -2082,13 +2101,21 @@ def backup_database():
         shutil.copy2(DB_PATH, backup_path)
         app.logger.info(f"[备份] 数据库已备份: {backup_path}")
 
-        # 清理旧备份（保留7天）
-        cutoff = datetime.now().timestamp() - 7 * 86400
+        # 清理旧备份（保留最新的3个）
+        backups = []
         for f in os.listdir(BACKUP_DIR):
             fp = os.path.join(BACKUP_DIR, f)
-            if os.path.isfile(fp) and os.path.getmtime(fp) < cutoff:
+            if os.path.isfile(fp) and f.startswith('aliyun_platform_') and f.endswith('.db'):
+                backups.append((fp, os.path.getmtime(fp)))
+        
+        # 按修改时间排序（最新的在前）
+        backups.sort(key=lambda x: x[1], reverse=True)
+        
+        # 删除第4个及以后的备份
+        if len(backups) > 3:
+            for fp, _ in backups[3:]:
                 os.remove(fp)
-                app.logger.info(f"[备份] 已清理旧备份: {f}")
+                app.logger.info(f"[备份] 已清理旧备份: {os.path.basename(fp)}")
     except Exception as e:
         app.logger.error(f"[备份] 备份失败: {str(e)}")
 
@@ -2896,7 +2923,7 @@ def _query_ecs_renewal_price(access_key_id, access_key_secret, instance_id, regi
         return None
 
 
-def _query_rds_renewal_price(access_key_id, access_key_secret, instance_id, region_id):
+def _query_rds_renewal_price(access_key_id, access_key_secret, instance_id, region_id, engine, engine_version):
     """查询单个RDS实例续费价格（1个月）"""
     try:
         from alibabacloud_rds20140815.client import Client as RdsClient
@@ -2910,22 +2937,61 @@ def _query_rds_renewal_price(access_key_id, access_key_secret, instance_id, regi
         config.endpoint = 'rds.aliyuncs.com'
         client = RdsClient(config)
 
-        # RDS使用DescribePrice API，order_type='RENEW'
+        # 先查询实例详情获取必要参数
+        attr_req = rds_models.DescribeDBInstanceAttributeRequest(dbinstance_id=instance_id)
+        attr_resp = client.describe_dbinstance_attribute(attr_req)
+        if not attr_resp.body:
+            return None
+        
+        # 尝试多种可能的响应结构
+        inst_attr = None
+        items = getattr(attr_resp.body, 'items', None)
+        if items:
+            # 可能是列表或对象
+            if isinstance(items, list) and len(items) > 0:
+                inst_attr = items[0]
+            elif hasattr(items, 'dbinstance_attribute'):
+                attrs = items.dbinstance_attribute
+                if isinstance(attrs, list) and len(attrs) > 0:
+                    inst_attr = attrs[0]
+        
+        if not inst_attr:
+            print(f"[DEBUG] RDS {instance_id} 无法获取实例详情, items类型={type(items)}", flush=True)
+            return None
+        
+        db_instance_class = getattr(inst_attr, 'dbinstance_class', '')
+        db_instance_storage = getattr(inst_attr, 'dbinstance_storage', 0)
+        pay_type = getattr(inst_attr, 'pay_type', '')
+        
+        if not db_instance_class:
+            print(f"[DEBUG] RDS {instance_id} 无法获取实例规格", flush=True)
+            return None
+
         req = rds_models.DescribePriceRequest(
             region_id=region_id,
             dbinstance_id=instance_id,
             order_type='RENEW',
+            engine=engine,
+            engine_version=engine_version,
+            dbinstance_class=db_instance_class,
+            dbinstance_storage=db_instance_storage,
+            pay_type=pay_type,
             time_type='Month',
             used_time=1,
             quantity=1
         )
         resp = client.describe_price(req)
-        if resp.body and resp.body.price_info:
-            # 尝试多种可能的响应结构
-            if hasattr(resp.body.price_info, 'trade_price'):
-                return resp.body.price_info.trade_price
-            elif hasattr(resp.body.price_info, 'price') and hasattr(resp.body.price_info.price, 'trade_price'):
-                return resp.body.price_info.price.trade_price
+        print(f"[DEBUG] RDS {instance_id} 续费价格响应: body={resp.body}", flush=True)
+        if resp.body:
+            print(f"[DEBUG] RDS price_info={getattr(resp.body, 'price_info', None)}", flush=True)
+            if resp.body.price_info:
+                print(f"[DEBUG] RDS price_info属性: {[a for a in dir(resp.body.price_info) if not a.startswith('_')]}", flush=True)
+                if hasattr(resp.body.price_info, 'trade_price'):
+                    print(f"[DEBUG] RDS trade_price={resp.body.price_info.trade_price}", flush=True)
+                    return resp.body.price_info.trade_price
+                elif hasattr(resp.body.price_info, 'price') and hasattr(resp.body.price_info.price, 'trade_price'):
+                    print(f"[DEBUG] RDS price.trade_price={resp.body.price_info.price.trade_price}", flush=True)
+                    return resp.body.price_info.price.trade_price
         return None
     except Exception as e:
         app.logger.warning(f"查询RDS {instance_id} 续费价格失败: {str(e)}")
@@ -2946,16 +3012,65 @@ def _query_redis_renewal_price(access_key_id, access_key_secret, instance_id, re
         config.endpoint = 'r-kvstore.aliyuncs.com'
         client = KvstoreClient(config)
 
+        # 先查询实例详情
+        attr_req = kvstore_models.DescribeInstanceAttributeRequest(instance_id=instance_id)
+        attr_resp = client.describe_instance_attribute(attr_req)
+        if not attr_resp.body:
+            print(f"[DEBUG] Redis {instance_id} 无法获取实例详情: body为空", flush=True)
+            return None
+        
+        # 尝试多种可能的响应结构
+        inst_attr = None
+        instances = getattr(attr_resp.body, 'instances', None)
+        if instances:
+            # 尝试多种属性名
+            for attr_name in ['dbinstance_attribute', 'kv_store_instance', 'instance', 'instances']:
+                inst_list = getattr(instances, attr_name, None)
+                if inst_list and isinstance(inst_list, list) and len(inst_list) > 0:
+                    inst_attr = inst_list[0]
+                    break
+        
+        if not inst_attr:
+            print(f"[DEBUG] Redis {instance_id} 无法获取实例详情, instances属性={[a for a in dir(instances) if not a.startswith('_')] if instances else 'None'}", flush=True)
+            return None
+        
+        instance_class = getattr(inst_attr, 'instance_class', '')
+        capacity = getattr(inst_attr, 'capacity', '')
+        charge_type = getattr(inst_attr, 'charge_type', '') or getattr(inst_attr, 'instance_charge_type', '')
+        
+        print(f"[DEBUG] Redis {instance_id} 实例信息: class={instance_class}, capacity={capacity}, charge_type={charge_type}", flush=True)
+        
+        if charge_type != 'PrePaid':
+            print(f"[DEBUG] Redis {instance_id} 非包年包月实例，跳过续费价格查询", flush=True)
+            return None
+
+        # 使用实例ID和规格查询价格
         req = kvstore_models.DescribePriceRequest(
             region_id=region_id,
             order_type='RENEW',
             instance_id=instance_id,
-            period=1,
-            price_unit='Month'
+            instance_class=instance_class,
+            capacity=str(capacity),
+            period=1
         )
-        resp = client.describe_price(req)
-        if resp.body and resp.body.price_info and resp.body.price_info.price:
-            return resp.body.price_info.price.trade_price
+        print(f"[DEBUG] Redis {instance_id} 查询参数: region={region_id}, instance_class={instance_class}, capacity={capacity}", flush=True)
+        
+        try:
+            resp = client.describe_price(req)
+            print(f"[DEBUG] Redis {instance_id} 续费价格响应: body={resp.body}", flush=True)
+            if resp.body:
+                print(f"[DEBUG] Redis price_info={getattr(resp.body, 'price_info', None)}", flush=True)
+                if resp.body.price_info:
+                    print(f"[DEBUG] Redis price_info属性: {[a for a in dir(resp.body.price_info) if not a.startswith('_')]}", flush=True)
+                    if hasattr(resp.body.price_info, 'price') and resp.body.price_info.price:
+                        print(f"[DEBUG] Redis price.trade_price={getattr(resp.body.price_info.price, 'trade_price', None)}", flush=True)
+                        return resp.body.price_info.price.trade_price
+        except Exception as price_err:
+            # 如果是找不到订购信息，可能是实例刚创建，稍后重试
+            if 'CAN_NOT_FIND_SUBSCRIPTION' in str(price_err):
+                print(f"[WARNING] Redis {instance_id} 订购信息未找到，可能实例较新，将在下次同步时重试", flush=True)
+            else:
+                raise
         return None
     except Exception as e:
         app.logger.warning(f"查询Redis {instance_id} 续费价格失败: {str(e)}")
@@ -3256,7 +3371,7 @@ def ram_list_user_policies(account_id, user_name):
                     'policy_name': p.policy_name,
                     'policy_type': p.policy_type,
                     'description': getattr(p, 'description', '') or '',
-                    'attachment_date': '',  # SDK不支持获取授权时间
+                    'attachment_date': getattr(p, 'attach_date', '') or '',
                 })
         return jsonify({'success': True, 'policies': policies})
     except Exception as e:
@@ -3793,6 +3908,11 @@ def monitor_get_active_alarms(account_id):
                 resp = client.describe_metric_rule_list(req)
                 if resp.body and resp.body.alarms and resp.body.alarms.alarm:
                     for h in resp.body.alarms.alarm:
+                        # 调试：打印第一个告警的所有字段
+                        if len(active_alarms) == 0:
+                            app.logger.info(f'[Monitor] 告警字段: {[a for a in dir(h) if not a.startswith("_")]}')
+                            app.logger.info(f'[Monitor] expression={getattr(h, "expression", None)}, value={getattr(h, "value", None)}, alert_time={getattr(h, "alert_time", None)}')
+                        
                         # 解析资源维度
                         resource_info = ''
                         if hasattr(h, 'dimensions') and h.dimensions:
@@ -3938,6 +4058,7 @@ def auto_sync_all_accounts():
 
 def update_scheduler():
     """根据数据库配置更新调度器"""
+    import sys
     global scheduler
     try:
         conn = get_db()
@@ -3947,10 +4068,15 @@ def update_scheduler():
         conn.close()
 
         if not row:
+            sys.stderr.write("[定期同步] auto_sync_config 表中无配置数据\n")
+            sys.stderr.flush()
             return
 
         enabled = bool(row['enabled'])
         interval_hours = row['interval_hours'] or 6
+        
+        sys.stderr.write(f"[定期同步] 配置状态: enabled={enabled}, interval_hours={interval_hours}\n")
+        sys.stderr.flush()
 
         # 移除现有job
         if scheduler.get_job(_sync_job_id):
@@ -3965,12 +4091,15 @@ def update_scheduler():
                 id=_sync_job_id,
                 replace_existing=True
             )
-            app.logger.info("[定期同步] 已启用，每个整点同步")
+            sys.stderr.write("[定期同步] 已启用，每个整点同步\n")
+            sys.stderr.flush()
         else:
-            app.logger.info("[定期同步] 已禁用")
+            sys.stderr.write("[定期同步] 已禁用，请在概览页开启自动同步\n")
+            sys.stderr.flush()
 
     except Exception as e:
-        app.logger.error(f"更新调度器失败: {str(e)}")
+        sys.stderr.write(f"更新调度器失败: {str(e)}\n")
+        sys.stderr.flush()
 
 
 @app.route('/api/auto-sync', methods=['GET'])
@@ -4172,6 +4301,7 @@ import os as _os
 
 def start_scheduler():
     """启动调度器，仅在非 reloader 父进程时启动"""
+    import sys
     init_db()  # 确保表已创建
     update_scheduler()
     # 添加每日备份任务（凌晨3点）
@@ -4184,7 +4314,8 @@ def start_scheduler():
             id='db_backup',
             replace_existing=True
         )
-        app.logger.info("[备份] 已添加每日数据库备份任务（凌晨3:00）")
+        sys.stderr.write("[备份] 已添加每日数据库备份任务（凌晨3:00）\n")
+        sys.stderr.flush()
     # 添加同步任务清理（每 30 分钟）
     if not scheduler.get_job('cleanup_sync_tasks'):
         scheduler.add_job(
@@ -4194,14 +4325,32 @@ def start_scheduler():
             id='cleanup_sync_tasks',
             replace_existing=True
         )
-        app.logger.info("[清理] 已添加同步任务定期清理（30分钟）")
+        sys.stderr.write("[清理] 已添加同步任务定期清理（30分钟）\n")
+        sys.stderr.flush()
     if not scheduler.running:
         scheduler.start()
-        app.logger.info("[调度器] 调度器已启动")
+        sys.stderr.write("[调度器] 调度器已启动\n")
+        sys.stderr.flush()
+    
+    # 打印所有已注册的任务
+    jobs = scheduler.get_jobs()
+    sys.stderr.write(f"[调度器] 当前注册的任务数: {len(jobs)}\n")
+    sys.stderr.flush()
+    for job in jobs:
+        sys.stderr.write(f"[调度器] 任务ID: {job.id}, 下次执行: {job.next_run_time}\n")
+        sys.stderr.flush()
 
 # 在非 debug 模式下直接启动，debug 模式下仅由 reloader 子进程启动
+import sys
+sys.stderr.write(f"[调度器] app.debug={app.debug}, WERKZEUG_RUN_MAIN={_os.environ.get('WERKZEUG_RUN_MAIN')}\n")
+sys.stderr.flush()
 if not app.debug or _os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+    sys.stderr.write("[调度器] 开始启动调度器...\n")
+    sys.stderr.flush()
     start_scheduler()
+else:
+    sys.stderr.write("[调度器] 跳过调度器启动（debug模式且非reloader子进程）\n")
+    sys.stderr.flush()
 
 
 if __name__ == '__main__':

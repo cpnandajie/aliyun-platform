@@ -436,6 +436,7 @@ function ResourceManagement() {
   const [accounts, setAccounts] = useState([])
   const [selectedAccount, setSelectedAccount] = useState('')
   const [keyword, setKeyword] = useState('')
+  const [searchKeyword, setSearchKeyword] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
   const [regionFilter, setRegionFilter] = useState('')
   const [data, setData] = useState([])
@@ -454,8 +455,8 @@ function ResourceManagement() {
       { key: 'instance_type', label: '规格', sortable: true },
       { key: 'cpu', label: 'CPU', sortable: true },
       { key: 'memory_gb', label: '内存(GB)', sortable: true },
-      { key: 'private_ip', label: '内网IP' },
-      { key: 'public_ip', label: '公网IP' },
+      { key: 'private_ip', label: '内网IP', sortable: true },
+      { key: 'public_ip', label: '公网IP', sortable: true },
       { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
       { key: 'renewal_price', label: '月续费', sortable: true, render: (v, row) => {
         if (v !== null && v !== undefined) return <span style={{ color: '#e67e22', fontWeight: 500 }}>¥{fmtMoney(v)}</span>
@@ -469,7 +470,18 @@ function ResourceManagement() {
       { key: 'engine', label: '引擎', sortable: true },
       { key: 'engine_version', label: '版本', sortable: true },
       { key: 'instance_type', label: '类型', sortable: true, render: v => ({ Primary: '主实例', Readonly: '只读实例', Guard: '灾备实例', Temp: '临时实例' }[v] || v) },
-      { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{STATUS_LABELS[v] || v}</span> },
+      { key: 'instance_cpu', label: 'CPU', sortable: true, render: v => v ? `${v}核` : '-' },
+      { key: 'instance_memory', label: '内存(GB)', sortable: true, render: v => {
+        if (!v) return '-'
+        const mem = parseFloat(v)
+        return mem >= 1024 ? Math.round(mem / 1024) : mem
+      }},
+      { key: 'instance_storage', label: '存储', sortable: true, render: v => {
+        if (!v) return '-'
+        const storage = parseFloat(v)
+        if (storage >= 1024) return `${(storage / 1024).toFixed(1)}TB`
+        return `${storage}GB`
+      }},
       { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
       { key: 'renewal_price', label: '月续费', sortable: true, render: (v, row) => {
         if (v !== null && v !== undefined) return <span style={{ color: '#e67e22', fontWeight: 500 }}>¥{fmtMoney(v)}</span>
@@ -480,7 +492,7 @@ function ResourceManagement() {
       { key: 'account_name', label: '账号', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span> },
       { key: 'instance_id', label: '实例ID', sortable: true },
       { key: 'instance_name', label: '实例名称', sortable: true },
-      { key: 'address', label: '地址', className: 'td-mono' },
+      { key: 'address', label: '地址', sortable: true, className: 'td-mono' },
       { key: 'address_type', label: '地址类型', sortable: true, render: v => ({ internet: '公网', intranet: '内网' }[v] || v) },
       { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{({ active: '运行中', inactive: '已停止', locked: '已锁定' }[v] || STATUS_LABELS[v] || v)}</span> },
       { key: 'network_type', label: '网络类型', sortable: true, render: v => ({ vpc: 'VPC', classic: '经典网络' }[v] || v) },
@@ -503,8 +515,6 @@ function ResourceManagement() {
       { key: 'architecture_type', label: '架构', sortable: true, render: v => ({ standard: '标准版', cluster: '集群版', rwsplit: '读写分离版' }[v] || v) },
       { key: 'capacity', label: '容量', sortable: true },
       { key: 'engine_version', label: '版本', sortable: true },
-      { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{STATUS_LABELS[v] || v}</span> },
-      { key: 'connection_domain', label: '连接地址', className: 'td-mono' },
       { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
       { key: 'renewal_price', label: '月续费', sortable: true, render: (v, row) => {
         if (v !== null && v !== undefined) return <span style={{ color: '#e67e22', fontWeight: 500 }}>¥{fmtMoney(v)}</span>
@@ -529,7 +539,7 @@ function ResourceManagement() {
     setLoading(true)
     const params = {}
     if (selectedAccount) params.account_id = selectedAccount
-    if (keyword) params.keyword = keyword
+    if (searchKeyword) params.keyword = searchKeyword
     if (statusFilter) params.status = statusFilter
     if (regionFilter) params.region = regionFilter
 
@@ -537,14 +547,23 @@ function ResourceManagement() {
       .then(res => setData(res.data))
       .catch(err => console.error('加载数据失败:', err))
       .finally(() => setLoading(false))
-  }, [activeTab, selectedAccount, keyword, statusFilter, regionFilter])
+  }, [activeTab, selectedAccount, searchKeyword, statusFilter, regionFilter])
 
   useEffect(() => { loadData() }, [loadData])
 
-  const handleSearch = () => { loadData() }
+  // 防抖自动搜索
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearchKeyword(keyword)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [keyword])
+
+  const handleSearch = () => { setSearchKeyword(keyword) }
   const handleReset = () => {
     setSelectedAccount('')
     setKeyword('')
+    setSearchKeyword('')
     setStatusFilter('')
     setRegionFilter('')
     setSortKey('')
@@ -609,8 +628,8 @@ function ResourceManagement() {
   }
 
   const sortArrow = (key) => {
-    if (sortKey !== key) return <span className="sort-arrow"> ↕</span>
-    return <span className="sort-arrow active"> {sortDir === 'asc' ? '↓' : '↑'}</span>
+    if (sortKey !== key) return ' ↕'
+    return sortDir === 'asc' ? ' ↑' : ' ↓'
   }
 
   const tabs = [
@@ -633,7 +652,7 @@ function ResourceManagement() {
             {cols.map(col => (
               <th
                 key={col.key}
-                className={col.sortable ? 'sortable' : ''}
+                style={col.sortable ? { cursor: 'pointer', userSelect: 'none' } : {}}
                 onClick={col.sortable ? () => handleSort(col.key) : undefined}
               >
                 {col.label}{col.sortable && sortArrow(col.key)}
@@ -731,7 +750,7 @@ function ResourceManagement() {
           <div
             key={tab.key}
             className={`resource-tab ${activeTab === tab.key ? 'active' : ''}`}
-            onClick={() => { setActiveTab(tab.key); setKeyword(''); setSelectedAccount(''); setSortKey(''); }}
+            onClick={() => { setActiveTab(tab.key); setKeyword(''); setSortKey(''); }}
           >
             {tab.label}
           </div>
@@ -850,8 +869,8 @@ function BillManagement() {
     setDetailSort(prev => prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' })
   }
   const sortArrowFor = (sort, key) => {
-    if (sort.key !== key) return <span className="sort-arrow"> ↕</span>
-    return <span className="sort-arrow active"> {sort.dir === 'asc' ? '↓' : '↑'}</span>
+    if (sort.key !== key) return ' ↕'
+    return sort.dir === 'asc' ? ' ↑' : ' ↓'
   }
   const getSorted = (arr, sort) => {
     if (!sort.key) return arr
@@ -965,10 +984,10 @@ function BillManagement() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th className="sortable" onClick={() => handleBillsSort('account_name')}>账号名称{sortArrowFor(billsSort, 'account_name')}</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleBillsSort('account_name')}>账号名称{sortArrowFor(billsSort, 'account_name')}</th>
                   <th>账单月份</th>
-                  <th className="sortable" onClick={() => handleBillsSort('total_amount')}>消费总额{sortArrowFor(billsSort, 'total_amount')}</th>
-                  <th className="sortable" onClick={() => handleBillsSort('trend')}>环比上月{sortArrowFor(billsSort, 'trend')}</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleBillsSort('total_amount')}>消费总额{sortArrowFor(billsSort, 'total_amount')}</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleBillsSort('trend')}>环比上月{sortArrowFor(billsSort, 'trend')}</th>
                   <th>更新时间</th>
                   <th>操作</th>
                 </tr>
@@ -1033,12 +1052,12 @@ function BillManagement() {
                             <table className="data-table inner-table">
                               <thead>
                                 <tr>
-                                  <th className="sortable" onClick={() => handleDetailSort('product_code')}>产品类型{sortArrowFor(detailSort, 'product_code')}</th>
+                                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('product_code')}>产品类型{sortArrowFor(detailSort, 'product_code')}</th>
                                   <th>产品明细</th>
-                                  <th className="sortable" onClick={() => handleDetailSort('pretax_amount')}>应付金额{sortArrowFor(detailSort, 'pretax_amount')}</th>
-                                  <th className="sortable" onClick={() => handleDetailSort('trend')}>环比上月{sortArrowFor(detailSort, 'trend')}</th>
-                                  <th className="sortable" onClick={() => handleDetailSort('cash_amount')}>现金支付额{sortArrowFor(detailSort, 'cash_amount')}</th>
-                                  <th className="sortable" onClick={() => handleDetailSort('deduct_amount')}>代金券抵扣{sortArrowFor(detailSort, 'deduct_amount')}</th>
+                                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('pretax_amount')}>应付金额{sortArrowFor(detailSort, 'pretax_amount')}</th>
+                                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('trend')}>环比上月{sortArrowFor(detailSort, 'trend')}</th>
+                                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('cash_amount')}>现金支付额{sortArrowFor(detailSort, 'cash_amount')}</th>
+                                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('deduct_amount')}>代金券抵扣{sortArrowFor(detailSort, 'deduct_amount')}</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -1170,9 +1189,9 @@ function BillManagement() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th className="sortable" onClick={() => handleYearlySort('account_name')}>账号名称{sortArrowFor(yearlySort, 'account_name')}</th>
-                  <th className="sortable" onClick={() => handleYearlySort('yearly_amount')}>年消费总额{sortArrowFor(yearlySort, 'yearly_amount')}</th>
-                  <th className="sortable td-center" onClick={() => handleYearlySort('months_count')}>账单月数{sortArrowFor(yearlySort, 'months_count')}</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleYearlySort('account_name')}>账号名称{sortArrowFor(yearlySort, 'account_name')}</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleYearlySort('yearly_amount')}>年消费总额{sortArrowFor(yearlySort, 'yearly_amount')}</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} className="td-center" onClick={() => handleYearlySort('months_count')}>账单月数{sortArrowFor(yearlySort, 'months_count')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1591,7 +1610,7 @@ function AccountManagement() {
       {/* 默认区域配置 */}
       <div className="section-block">
         <h3>同步区域</h3>
-        <p style={{ color: '#666', fontSize: 13, marginBottom: 12 }}>勾选需要同步的区域，至少选择一个</p>
+        <p style={{ color: '#64748b', fontSize: 14, marginBottom: 12 }}>勾选需要同步的区域，至少选择一个</p>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '8px 16px' }}>
           {ALL_REGIONS.map(region => (
             <label key={region.id} style={{
@@ -1727,6 +1746,9 @@ function RamManagement() {
   const [resetPwdLoading, setResetPwdLoading] = useState(false)
   // 用户搜索
   const [userKeyword, setUserKeyword] = useState('')
+  // 用户排序
+  const [userSortKey, setUserSortKey] = useState('create_date')
+  const [userSortDir, setUserSortDir] = useState('desc')
   // 当前操作的用户所属账号
   const [currentUserAccountId, setCurrentUserAccountId] = useState(null)
   // 确认弹框
@@ -1740,7 +1762,41 @@ function RamManagement() {
       || (u.display_name || '').toLowerCase().includes(kw)
       || (u.comments || '').toLowerCase().includes(kw)
       || (u.access_keys || []).some(ak => ak.toLowerCase().includes(kw))
+  }).sort((a, b) => {
+    let va = a[userSortKey]
+    let vb = b[userSortKey]
+    // 特殊处理 AccessKey
+    if (userSortKey === 'access_keys') {
+      va = (a.access_keys && a.access_keys.length > 0) ? a.access_keys[0] : ''
+      vb = (b.access_keys && b.access_keys.length > 0) ? b.access_keys[0] : ''
+    }
+    // 特殊处理日期
+    if (userSortKey === 'create_date') {
+      va = new Date(va || 0).getTime()
+      vb = new Date(vb || 0).getTime()
+      return userSortDir === 'asc' ? va - vb : vb - va
+    }
+    // 字符串比较
+    va = (va || '').toString().toLowerCase()
+    vb = (vb || '').toString().toLowerCase()
+    if (va < vb) return userSortDir === 'asc' ? -1 : 1
+    if (va > vb) return userSortDir === 'asc' ? 1 : -1
+    return 0
   })
+
+  const handleUserSort = (key) => {
+    if (userSortKey === key) {
+      setUserSortDir(userSortDir === 'asc' ? 'desc' : 'asc')
+    } else {
+      setUserSortKey(key)
+      setUserSortDir('asc')
+    }
+  }
+
+  const sortArrow = (key) => {
+    if (userSortKey !== key) return ' ↕'
+    return userSortDir === 'asc' ? ' ↑' : ' ↓'
+  }
 
   useEffect(() => {
     axios.get('/api/accounts')
@@ -1772,6 +1828,12 @@ function RamManagement() {
           const allUsers = results.flatMap(r =>
             r.users.map(u => ({ ...u, account_name: r.account_name, account_id: r.account_id }))
           )
+          // 按创建时间倒序排列
+          allUsers.sort((a, b) => {
+            const dateA = new Date(a.create_date || 0)
+            const dateB = new Date(b.create_date || 0)
+            return dateB - dateA
+          })
           setRamUsers(allUsers)
         })
         .catch(err => toast.error('加载 RAM 用户失败: ' + (err.response?.data?.error || err.message)))
@@ -1779,7 +1841,16 @@ function RamManagement() {
     } else {
       axios.get(`/api/accounts/${selectedAccount}/ram/users`)
         .then(res => {
-          if (res.data.success) setRamUsers(res.data.users)
+          if (res.data.success) {
+            const users = res.data.users
+            // 按创建时间倒序排列
+            users.sort((a, b) => {
+              const dateA = new Date(a.create_date || 0)
+              const dateB = new Date(b.create_date || 0)
+              return dateB - dateA
+            })
+            setRamUsers(users)
+          }
           else toast.error(res.data.error || '加载失败')
         })
         .catch(err => toast.error('加载 RAM 用户失败: ' + (err.response?.data?.error || err.message)))
@@ -2047,11 +2118,11 @@ function RamManagement() {
               <thead>
                 <tr>
                   {selectedAccount === 'all' && <th>所属账号</th>}
-                  <th>用户名</th>
-                  <th>显示名称</th>
-                  <th>登录名称</th>
-                  <th>AccessKey ID</th>
-                  <th>创建时间</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleUserSort('user_name')}>用户名{sortArrow('user_name')}</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleUserSort('display_name')}>显示名称{sortArrow('display_name')}</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleUserSort('user_principal_name')}>登录名称{sortArrow('user_principal_name')}</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleUserSort('access_keys')}>AccessKey ID{sortArrow('access_keys')}</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleUserSort('create_date')}>创建时间{sortArrow('create_date')}</th>
                   <th>备注</th>
                   <th>操作</th>
                 </tr>
@@ -2089,32 +2160,6 @@ function RamManagement() {
                                 添加策略
                               </button>
                             </div>
-                            {policyLoading ? (
-                              <div className="empty-state">加载中..</div>
-                            ) : userPolicies.length === 0 ? (
-                              <div className="empty-state">暂无权限策略</div>
-                            ) : (
-                              <table className="data-table inner-table">
-                                <thead>
-                                  <tr>
-                                    <th>策略名称</th>
-                                    <th>策略类型</th>
-                                    <th>操作</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {userPolicies.map(p => (
-                                    <tr key={`${p.policy_type}-${p.policy_name}`}>
-                                      <td>{p.policy_name}</td>
-                                      <td><span className={`status-tag ${p.policy_type === 'System' ? 'status-active' : 'status-Creating'}`}>{p.policy_type}</span></td>
-                                      <td>
-                                        <button className="btn-link btn-danger-link" onClick={() => handleDetachPolicy(p.policy_name, p.policy_type)}>移除</button>
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            )}
                             {/* 添加策略表单 */}
                             {showAttachForm && (
                               <div className="ram-attach-form">
@@ -2172,6 +2217,36 @@ function RamManagement() {
                                   <button className="btn-default btn-sm" onClick={() => { setShowAttachForm(false); setSelectedPolicy(''); setPolicyKeyword('') }}>取消</button>
                                 </div>
                               </div>
+                            )}
+                            {policyLoading ? (
+                              <div className="empty-state">加载中..</div>
+                            ) : userPolicies.length === 0 ? (
+                              <div className="empty-state">暂无权限策略</div>
+                            ) : (
+                              <table className="data-table inner-table">
+                                <thead>
+                                  <tr>
+                                    <th>策略名称</th>
+                                    <th>备注</th>
+                                    <th>策略类型</th>
+                                    <th>授权时间</th>
+                                    <th>操作</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {userPolicies.map(p => (
+                                    <tr key={`${p.policy_type}-${p.policy_name}`}>
+                                      <td>{p.policy_name}</td>
+                                      <td style={{ maxWidth: '400px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.description || ''}>{p.description || '-'}</td>
+                                      <td>{p.policy_type === 'System' ? '系统策略' : '自定义策略'}</td>
+                                      <td style={{ whiteSpace: 'nowrap' }}>{p.attachment_date ? fmtDate(p.attachment_date) : '-'}</td>
+                                      <td>
+                                        <button className="btn-link btn-danger-link" onClick={() => handleDetachPolicy(p.policy_name, p.policy_type)}>移除</button>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
                             )}
                           </div>
                         </td>
@@ -2531,7 +2606,7 @@ function DnsManagement() {
                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleDomainSort('holder')}>持有者{sortIcon('holder')}</th>
                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleDomainSort('record_count')}>记录数{sortIcon('record_count')}</th>
                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleDomainSort('end_time')}>到期时间{sortIcon('end_time')}</th>
-                  <th>状态</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => toggleDomainSort('status')}>状态{sortIcon('status')}</th>
                   <th style={{ width: 70 }}>操作</th>
                 </tr>
               </thead>
@@ -2841,7 +2916,7 @@ function SslManagement() {
     { key: 'cert_type', label: '类型', sortable: true },
     { key: 'start_date', label: '生效时间', sortable: true, dateKey: true, render: v => v ? fmtDate(v) : '-' },
     { key: 'end_date', label: '到期时间', sortable: true, dateKey: true, render: v => v ? fmtDate(v) : '-' },
-    { key: 'status', label: '状态', render: (_, c) => getStatusTag(c) },
+    { key: 'status', label: '状态', sortable: true, render: (_, c) => getStatusTag(c) },
   ]
 
   const visibleColumns = sslColumns.filter(c => c.showOnly !== 'all' || selectedAccount === 'all')
@@ -2856,8 +2931,8 @@ function SslManagement() {
   }
 
   const sortArrow = (key) => {
-    if (sortKey !== key) return <span className="sort-arrow"> ↕</span>
-    return <span className="sort-arrow active"> {sortDir === 'asc' ? '↓' : '↑'}</span>
+    if (sortKey !== key) return ' ↕'
+    return sortDir === 'asc' ? ' ↑' : ' ↓'
   }
 
   const sortedCerts = (() => {
@@ -2933,7 +3008,7 @@ function SslManagement() {
                   {visibleColumns.map(col => (
                     <th
                       key={col.key}
-                      className={col.sortable ? 'sortable' : ''}
+                      style={col.sortable ? { cursor: 'pointer', userSelect: 'none' } : {}}
                       onClick={col.sortable ? () => handleSort(col.key) : undefined}
                     >
                       {col.label}{col.sortable && sortArrow(col.key)}
@@ -3343,6 +3418,7 @@ function NetworkManagement() {
   const [accounts, setAccounts] = useState([])
   const [selectedAccount, setSelectedAccount] = useState('')
   const [keyword, setKeyword] = useState('')
+  const [searchKeyword, setSearchKeyword] = useState('')
   const [regionFilter, setRegionFilter] = useState('')
   const [regions, setRegions] = useState([])
   const [data, setData] = useState([])
@@ -3362,7 +3438,7 @@ function NetworkManagement() {
       { key: 'account_name', label: '账号', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span> },
       { key: 'instance_id', label: 'VPC ID', sortable: true },
       { key: 'vpc_name', label: '名称', sortable: true },
-      { key: 'cidr_block', label: '网段' },
+      { key: 'cidr_block', label: '网段', sortable: true },
       { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
       { key: 'created_time', label: '创建时间', sortable: true, render: v => fmtDate(v) },
     ],
@@ -3383,7 +3459,7 @@ function NetworkManagement() {
       { key: 'name', label: '名称', sortable: true },
       { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{STATUS_LABELS[v] || v}</span> },
       { key: 'bandwidth', label: '带宽', sortable: true, render: v => v ? `${v}Mbps` : '-' },
-      { key: 'charge_type', label: '计费方式', render: v => ({ PayByTraffic: '按流量', PayByBandwidth: '按带宽' }[v] || v) },
+      { key: 'charge_type', label: '计费方式', sortable: true, render: v => ({ PayByTraffic: '按流量', PayByBandwidth: '按带宽' }[v] || v) },
       { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
     ],
     nat: [
@@ -3411,18 +3487,28 @@ function NetworkManagement() {
     setLoading(true)
     const params = {}
     if (selectedAccount && selectedAccount !== 'all') params.account_id = selectedAccount
-    if (keyword) params.keyword = keyword
+    if (searchKeyword) params.keyword = searchKeyword
     if (regionFilter) params.region = regionFilter
 
     axios.get(apiMap[activeTab], { params })
       .then(res => setData(res.data))
       .catch(() => setData([]))
       .finally(() => setLoading(false))
-  }, [activeTab, selectedAccount, keyword, regionFilter])
+  }, [activeTab, selectedAccount, searchKeyword, regionFilter])
 
   useEffect(() => { loadData() }, [loadData])
 
-  useEffect(() => { setKeyword(''); setRegionFilter(''); setSortKey('') }, [activeTab])
+  // 防抖自动搜索
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearchKeyword(keyword)
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [keyword])
+
+  useEffect(() => { setKeyword(''); setSearchKeyword(''); setRegionFilter(''); setSortKey('') }, [activeTab])
+
+  const handleSearch = () => { setSearchKeyword(keyword) }
 
   // 排序
   const handleSort = (key) => {
@@ -3442,8 +3528,8 @@ function NetworkManagement() {
   })
 
   const sortArrow = (key) => {
-    if (sortKey !== key) return <span className="sort-arrow"> ↕</span>
-    return <span className="sort-arrow active"> {sortDir === 'asc' ? '↓' : '↑'}</span>
+    if (sortKey !== key) return ' ↕'
+    return sortDir === 'asc' ? ' ↑' : ' ↓'
   }
 
   const columns = tabColumns[activeTab] || []
@@ -3463,11 +3549,11 @@ function NetworkManagement() {
           <option value="">全部区域</option>
           {regions.map(r => <option key={r} value={r}>{REGION_LABELS[r] || r}</option>)}
         </select>
-        <input type="text" placeholder="搜索ID/名称/网段/IP..." value={keyword} onChange={e => setKeyword(e.target.value)} />
-        <button className="btn-primary" onClick={loadData} disabled={loading}>
+        <input type="text" placeholder="搜索ID/名称/网段/IP..." value={keyword} onChange={e => setKeyword(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSearch()} />
+        <button className="btn-primary" onClick={handleSearch} disabled={loading}>
           {loading ? '查询中..' : '搜索'}
         </button>
-        <button className="btn-default" onClick={() => { setKeyword(''); setRegionFilter(''); setSelectedAccount('all') }}>重置</button>
+        <button className="btn-default" onClick={() => { setKeyword(''); setSearchKeyword(''); setRegionFilter(''); setSelectedAccount('all') }}>重置</button>
       </div>
 
       <div className="resource-tabs">
@@ -3582,14 +3668,8 @@ function SecurityEvents() {
   })
 
   const sortArrow = (key) => {
-    if (sortKey !== key) return <span className="sort-arrow"> ↕</span>
-    return <span className="sort-arrow active"> {sortDir === 'asc' ? '↓' : '↑'}</span>
-  }
-
-  const fmtTimestamp = (ts) => {
-    if (!ts) return '-'
-    const d = new Date(ts)
-    return d.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+    if (sortKey !== key) return ' ↕'
+    return sortDir === 'asc' ? ' ↑' : ' ↓'
   }
 
   return (
@@ -3620,24 +3700,25 @@ function SecurityEvents() {
         <button className="btn-default" onClick={loadEvents}>刷新</button>
       </div>
 
-      {loading ? (
-        <div className="loading-state">加载中...</div>
-      ) : sortedEvents.length === 0 ? (
-        <div className="empty-state">暂无安全事件数据</div>
-      ) : (
-        <div className="overview-table-wrap">
+      <div className="section-block">
+        {loading ? (
+          <div className="loading-state">加载中...</div>
+        ) : sortedEvents.length === 0 ? (
+          <div className="empty-state">暂无安全事件数据</div>
+        ) : (
+          <div className="overview-table-wrap">
           <table className="data-table">
             <thead>
               <tr>
-                <th className="sortable" onClick={() => handleSort('account_name')}>账号{sortArrow('account_name')}</th>
-                <th className="sortable" onClick={() => handleSort('event_name')}>事件名称{sortArrow('event_name')}</th>
-                <th>事件类型</th>
-                <th className="sortable" onClick={() => handleSort('level')}>告警级别{sortArrow('level')}</th>
-                <th>关联实例</th>
-                <th>公网IP</th>
-                <th>内网IP</th>
-                <th>处理状态</th>
-                <th className="sortable" onClick={() => handleSort('gmt_create')}>发生时间{sortArrow('gmt_create')}</th>
+                <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSort('account_name')}>账号{sortArrow('account_name')}</th>
+                <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSort('event_name')}>事件名称{sortArrow('event_name')}</th>
+                <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSort('event_type')}>事件类型{sortArrow('event_type')}</th>
+                <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSort('level')}>告警级别{sortArrow('level')}</th>
+                <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSort('instance_name')}>关联实例{sortArrow('instance_name')}</th>
+                <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSort('internet_ip')}>公网IP{sortArrow('internet_ip')}</th>
+                <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSort('intranet_ip')}>内网IP{sortArrow('intranet_ip')}</th>
+                <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSort('dealed')}>处理状态{sortArrow('dealed')}</th>
+                <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSort('gmt_create')}>发生时间{sortArrow('gmt_create')}</th>
               </tr>
             </thead>
             <tbody>
@@ -3661,20 +3742,21 @@ function SecurityEvents() {
                     </span>
                   </td>
                   <td>{e.instance_name || '-'}</td>
-                  <td style={{ fontFamily: 'monospace' }}>{e.internet_ip || '-'}</td>
-                  <td style={{ fontFamily: 'monospace' }}>{e.intranet_ip || '-'}</td>
+                  <td className="td-mono">{e.internet_ip || '-'}</td>
+                  <td className="td-mono">{e.intranet_ip || '-'}</td>
                   <td>
                     <span className={`status-tag ${e.dealed === 'Y' || e.dealed === '1' ? 'status-active' : 'status-Creating'}`}>
                       {statusLabels[String(e.dealed)] || e.dealed || '-'}
                     </span>
                   </td>
-                  <td style={{ whiteSpace: 'nowrap' }}>{fmtTimestamp(e.gmt_create)}</td>
+                  <td style={{ whiteSpace: 'nowrap' }}>{fmtDate(e.gmt_create)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
+      </div>
     </div>
   )
 }
