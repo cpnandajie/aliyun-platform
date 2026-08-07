@@ -481,6 +481,18 @@ def init_db():
         conn.close()
     except Exception:
         pass
+    # 检查accounts表有balance_threshold列（后续版本新增）
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(accounts)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'balance_threshold' not in columns:
+            cursor.execute('ALTER TABLE accounts ADD COLUMN balance_threshold REAL DEFAULT 20000')
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
     # 创建系统设置表
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -2129,7 +2141,7 @@ def api_get_accounts():
     """获取所有账号列表"""
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute('SELECT id, name, access_key_id, remark, created_at, updated_at, last_sync_at, aliyun_account_id, aliyun_account_name FROM accounts ORDER BY id')
+    cursor.execute('SELECT id, name, access_key_id, remark, created_at, updated_at, last_sync_at, aliyun_account_id, aliyun_account_name, balance_threshold FROM accounts ORDER BY id')
     accounts = []
     for row in cursor.fetchall():
         acct = dict(row)
@@ -2148,14 +2160,22 @@ def api_add_account():
     access_key_id = data.get('access_key_id', '').strip()
     access_key_secret = data.get('access_key_secret', '').strip()
     remark = data.get('remark', '').strip()
+    balance_threshold = data.get('balance_threshold')
+    if balance_threshold is not None:
+        try:
+            balance_threshold = float(balance_threshold)
+        except (ValueError, TypeError):
+            balance_threshold = 20000
+    else:
+        balance_threshold = 20000
 
     if not name or not access_key_id or not access_key_secret:
         return jsonify({'error': '请填写账号名称、AccessKey ID和AccessKey Secret'}), 400
 
     try:
         last_id = execute_db(
-            'INSERT INTO accounts (name, access_key_id, access_key_secret, remark) VALUES (?, ?, ?, ?)',
-            (name, access_key_id, access_key_secret, remark)
+            'INSERT INTO accounts (name, access_key_id, access_key_secret, remark, balance_threshold) VALUES (?, ?, ?, ?, ?)',
+            (name, access_key_id, access_key_secret, remark, balance_threshold)
         )
         log_operation('账号管理', '添加账号', f'新增账号：{name}', account_id=last_id, account_name=name)
         return jsonify({'success': True, 'id': last_id, 'message': '账号添加成功'})
@@ -2192,18 +2212,26 @@ def api_update_account(account_id):
     access_key_id = data.get('access_key_id', '').strip()
     access_key_secret = data.get('access_key_secret', '').strip()
     remark = data.get('remark', '').strip()
+    balance_threshold = data.get('balance_threshold')
+    if balance_threshold is not None:
+        try:
+            balance_threshold = float(balance_threshold)
+        except (ValueError, TypeError):
+            balance_threshold = 20000
+    else:
+        balance_threshold = 20000
 
     try:
         if access_key_secret:
             execute_db('''
-                UPDATE accounts SET name=?, access_key_id=?, access_key_secret=?, remark=?, updated_at=?
+                UPDATE accounts SET name=?, access_key_id=?, access_key_secret=?, remark=?, balance_threshold=?, updated_at=?
                 WHERE id=?
-            ''', (name, access_key_id, access_key_secret, remark, datetime.now(), account_id))
+            ''', (name, access_key_id, access_key_secret, remark, balance_threshold, datetime.now(), account_id))
         else:
             execute_db('''
-                UPDATE accounts SET name=?, access_key_id=?, remark=?, updated_at=?
+                UPDATE accounts SET name=?, access_key_id=?, remark=?, balance_threshold=?, updated_at=?
                 WHERE id=?
-            ''', (name, access_key_id, remark, datetime.now(), account_id))
+            ''', (name, access_key_id, remark, balance_threshold, datetime.now(), account_id))
         log_operation('账号管理', '更新账号', f'更新账号：{name}', account_id=account_id, account_name=name)
         return jsonify({'success': True, 'message': '账号更新成功'})
     except Exception as e:
@@ -2410,7 +2438,7 @@ def api_get_overview():
     cursor = conn.cursor()
 
     # 获取所有账号
-    cursor.execute('SELECT id, name, remark, aliyun_account_id FROM accounts ORDER BY id')
+    cursor.execute('SELECT id, name, remark, aliyun_account_id, balance_threshold FROM accounts ORDER BY id')
     accounts = [dict(row) for row in cursor.fetchall()]
 
     current_month = datetime.now().strftime('%Y-%m')
@@ -2458,6 +2486,7 @@ def api_get_overview():
             'available_amount': round(balance_row['available_amount'], 2) if balance_row else 0,
             'available_cash': round(balance_row['available_cash'], 2) if balance_row else 0,
             'credit_amount': round(balance_row['credit_amount'], 2) if balance_row else 0,
+            'balance_threshold': acct.get('balance_threshold') or 20000,
         })
 
     conn.close()

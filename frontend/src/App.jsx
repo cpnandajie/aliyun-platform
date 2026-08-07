@@ -320,6 +320,21 @@ const REGION_LABELS = {
 function ResourceOverview() {
   const [overview, setOverview] = useState([])
   const [loading, setLoading] = useState(false)
+  // 各账号资源排序
+  const [ovSortKey, setOvSortKey] = useState('')
+  const [ovSortDir, setOvSortDir] = useState('asc')
+  const handleOvSort = (key) => {
+    if (ovSortKey === key) {
+      setOvSortDir(ovSortDir === 'asc' ? 'desc' : 'asc')
+    } else {
+      setOvSortKey(key)
+      setOvSortDir('asc')
+    }
+  }
+  const ovSortArrow = (key) => {
+    if (ovSortKey !== key) return ' ↕'
+    return ovSortDir === 'asc' ? ' ↑' : ' ↓'
+  }
 
   const loadData = useCallback(() => {
     setLoading(true)
@@ -379,7 +394,7 @@ function ResourceOverview() {
           <div className="card-value">¥{fmtMoney(totalMonthAmount)}</div>
           <div className="card-label">本月消费</div>
         </div>
-        <div className={`summary-card balance${totalBalance < 20000 ? ' low' : ''}`}>
+        <div className={`summary-card balance${totalBalance < overview.reduce((s, a) => s + (a.balance_threshold || 20000), 0) ? ' low' : ''}`}>
           <div className="card-value">¥{fmtMoney(totalBalance)}</div>
           <div className="card-label">可用额度</div>
         </div>
@@ -395,19 +410,37 @@ function ResourceOverview() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>账号名称</th>
-                  <th>备注</th>
-                  <th>ECS</th>
-                  <th>RDS</th>
-                  <th>SLB</th>
-                  <th>OSS</th>
-                  <th>Redis</th>
-                  <th>本月消费</th>
-                  <th>可用额度</th>
+                  {[
+                    { key: 'account_name', label: '账号名称' },
+                    { key: 'remark', label: '备注' },
+                    { key: 'ecs_count', label: 'ECS' },
+                    { key: 'rds_count', label: 'RDS' },
+                    { key: 'slb_count', label: 'SLB' },
+                    { key: 'oss_count', label: 'OSS' },
+                    { key: 'redis_count', label: 'Redis' },
+                    { key: 'month_amount', label: '本月消费' },
+                    { key: 'available_amount', label: '可用额度' },
+                  ].map(col => (
+                    <th
+                      key={col.key}
+                      style={{ cursor: 'pointer', userSelect: 'none' }}
+                      onClick={() => handleOvSort(col.key)}
+                    >
+                      {col.label}{ovSortArrow(col.key)}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {overview.map(item => (
+                {[...overview].sort((a, b) => {
+                  let va = a[ovSortKey] ?? ''
+                  let vb = b[ovSortKey] ?? ''
+                  if (typeof va === 'number' && typeof vb === 'number') {
+                    return ovSortDir === 'asc' ? va - vb : vb - va
+                  }
+                  const sa = String(va), sb = String(vb)
+                  return ovSortDir === 'asc' ? sa.localeCompare(sb) : sb.localeCompare(sa)
+                }).map(item => (
                   <tr key={item.account_id}>
                     <td>{item.account_name}</td>
                     <td>{item.remark || '-'}</td>
@@ -417,7 +450,7 @@ function ResourceOverview() {
                     <td>{item.oss_count}</td>
                     <td>{item.redis_count}</td>
                     <td className="td-amount">¥{fmtMoney(item.month_amount)}</td>
-                    <td className={item.available_amount < 20000 ? 'td-amount-danger' : 'td-amount'}>¥{fmtMoney(item.available_amount)}</td>
+                    <td className={(item.available_amount < (item.balance_threshold || 20000)) ? 'td-amount-danger' : 'td-amount'}>¥{fmtMoney(item.available_amount)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -425,7 +458,7 @@ function ResourceOverview() {
           </div>
         )}
       </div>
-      <div className="page-note">* 当账号的可用额度小于 2 万元时，将以<span style={{ color: '#ef4444', fontWeight: 600 }}>红色</span>显示，请及时关注余额。</div>
+      <div className="page-note">* 当账号的可用额度低于其设定的预警阈值时，将以<span style={{ color: '#ef4444', fontWeight: 600 }}>红色</span>显示，可在账号设置中自定义每个账号的阈值。</div>
     </div>
   )
 }
@@ -1227,7 +1260,22 @@ function AccountManagement() {
   })
   const [showForm, setShowForm] = useState(false)
   const [editingAccount, setEditingAccount] = useState(null)
-  const [formData, setFormData] = useState({ name: '', access_key_id: '', access_key_secret: '', remark: '' })
+  const [formData, setFormData] = useState({ name: '', access_key_id: '', access_key_secret: '', remark: '', balance_threshold: 20000 })
+  // 账号表格排序
+  const [acctSortKey, setAcctSortKey] = useState('')
+  const [acctSortDir, setAcctSortDir] = useState('asc')
+  const handleAcctSort = (key) => {
+    if (acctSortKey === key) {
+      setAcctSortDir(acctSortDir === 'asc' ? 'desc' : 'asc')
+    } else {
+      setAcctSortKey(key)
+      setAcctSortDir('asc')
+    }
+  }
+  const acctSortArrow = (key) => {
+    if (acctSortKey !== key) return ' ↕'
+    return acctSortDir === 'asc' ? ' ↑' : ' ↓'
+  }
   // 自动同步配置
   const [autoSync, setAutoSync] = useState({ enabled: false, interval_hours: 6, last_sync_at: null })
   const [intervalDropdownOpen, setIntervalDropdownOpen] = useState(false)
@@ -1369,13 +1417,13 @@ function AccountManagement() {
   }
 
   const handleAddAccount = () => {
-    setFormData({ name: '', access_key_id: '', access_key_secret: '', remark: '' })
+    setFormData({ name: '', access_key_id: '', access_key_secret: '', remark: '', balance_threshold: 20000 })
     setEditingAccount(null)
     setShowForm(true)
   }
 
   const handleEditAccount = (account) => {
-    setFormData({ name: account.name, access_key_id: account.access_key_id, access_key_secret: '', remark: account.remark || '' })
+    setFormData({ name: account.name, access_key_id: account.access_key_id, access_key_secret: '', remark: account.remark || '', balance_threshold: account.balance_threshold ?? 20000 })
     setEditingAccount(account)
     setShowForm(true)
   }
@@ -1662,6 +1710,10 @@ function AccountManagement() {
                 <label>备注</label>
                 <input type="text" value={formData.remark} onChange={e => setFormData(prev => ({ ...prev, remark: e.target.value }))} placeholder="备注信息" />
               </div>
+              <div className="form-item">
+                <label>余额预警阈值（元）</label>
+                <input type="number" value={formData.balance_threshold} onChange={e => setFormData(prev => ({ ...prev, balance_threshold: e.target.value === '' ? '' : Number(e.target.value) }))} placeholder="默认 20000" min="0" />
+              </div>
             </div>
             <div className="form-actions">
               <button className="btn-primary" onClick={handleSubmit}>确定</button>
@@ -1671,27 +1723,52 @@ function AccountManagement() {
         )}
 
         {accounts.length === 0 ? (
-          <div className="empty-state">暂无账号，请点击"添加账号"添加阿里云AccessKey</div>
+          <div className="empty-state">暂无账号，请点击“添加账号”添加阿里云AccessKey</div>
         ) : (
           <div className="overview-table-wrap">
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>账号名称</th>
-                  <th>阿里云账号ID</th>
-                  <th>AccessKey ID</th>
-                  <th>备注</th>
-                  <th>上次同步</th>
+                  {[
+                    { key: 'name', label: '账号名称' },
+                    { key: 'aliyun_account_id', label: '阿里云账号ID' },
+                    { key: 'access_key_id', label: 'AccessKey ID' },
+                    { key: 'remark', label: '备注' },
+                    { key: 'balance_threshold', label: '预警阈值' },
+                    { key: 'last_sync_at', label: '上次同步' },
+                  ].map(col => (
+                    <th
+                      key={col.key}
+                      style={{ cursor: 'pointer', userSelect: 'none' }}
+                      onClick={() => handleAcctSort(col.key)}
+                    >
+                      {col.label}{acctSortArrow(col.key)}
+                    </th>
+                  ))}
                   <th>操作</th>
                 </tr>
               </thead>
               <tbody>
-                {accounts.map(acct => (
+                {[...accounts].sort((a, b) => {
+                  let va = a[acctSortKey] ?? ''
+                  let vb = b[acctSortKey] ?? ''
+                  if (acctSortKey === 'balance_threshold') {
+                    va = va ?? 20000
+                    vb = vb ?? 20000
+                    return acctSortDir === 'asc' ? va - vb : vb - va
+                  }
+                  if (typeof va === 'number' && typeof vb === 'number') {
+                    return acctSortDir === 'asc' ? va - vb : vb - va
+                  }
+                  const sa = String(va), sb = String(vb)
+                  return acctSortDir === 'asc' ? sa.localeCompare(sb) : sb.localeCompare(sa)
+                }).map(acct => (
                   <tr key={acct.id}>
                     <td>{acct.name}</td>
                     <td className="td-mono">{acct.aliyun_account_id || '-'}</td>
                     <td className="td-mono">{acct.access_key_id}</td>
                     <td>{acct.remark || '-'}</td>
+                    <td>¥{fmtMoney(acct.balance_threshold ?? 20000)}</td>
                     <td>{acct.last_sync_at || '从未同步'}</td>
                     <td className="td-actions">
                       <button className="btn-link" onClick={() => handleSync(acct.id, 'all')} disabled={syncingIds[acct.id]}>
@@ -3217,6 +3294,35 @@ function CloudMonitor() {
     'acs_dts': 'DTS 数据传输',
     'acs_waf': 'WAF 防火墙',
     'acs_ddos': 'DDoS 高防',
+    'acs_rocketmq': 'RocketMQ 消息队列',
+    'acs_apigateway': 'API 网关',
+    'acs_k8s': 'Kubernetes 容器服务',
+    'acs_mse': 'MSE 微服务引擎',
+    'acs_memstore': 'Tair 内存数据库',
+    'acs_alb': 'ALB 应用型负载均衡',
+    'acs_nlb': 'NLB 网络型负载均衡',
+    'acs_ga': 'GA 全球加速',
+    'acs_privatelink': 'PrivateLink 私网连接',
+    'acs_pvtz': 'PrivateZone 云解析',
+    'acs_dns': 'DNS 云解析',
+    'acs_fc': 'FC 函数计算',
+    'acs_sae': 'SAE Serverless 应用引擎',
+    'acs_ons': 'ONS 消息队列',
+    'acs_amqp': 'AMQP 消息队列',
+    'acs_eventbridge': 'EventBridge 事件总线',
+    'acs_kafka': 'Kafka 消息队列',
+    'acs_acr': 'ACR 容器镜像服务',
+    'acs_ack': 'ACK 容器服务',
+    'acs_cms': 'CMS 云监控',
+    'acs_mns': 'MNS 消息服务',
+    'acs_iot': 'IoT 物联网',
+    'acs_hbase': 'HBase 数据库',
+    'acs_flink': 'Flink 实时计算',
+    'acs_hologres': 'Hologres 实时数仓',
+    'acs_dcdn': 'DCDN 全站加速',
+    'acs_opensearch': 'OpenSearch 开放搜索',
+    'acs_newbgpddos': 'DDoS 高防(新)',
+    'strategy_sys': '系统策略',
     'acs_strategy_sys': '系统策略',
   }
 
@@ -3246,6 +3352,100 @@ function CloudMonitor() {
     'Host.mem.usedutilization': '内存使用率',
     'Host.cpu.util': 'CPU 使用率',
     'Host.disk.util': '磁盘使用率',
+    'DiskReadWriteBPSUtilization': '磁盘读写BPS使用率',
+    'DiskReadBPS': '磁盘读BPS',
+    'DiskWriteBPS': '磁盘写BPS',
+    'DiskReadIOPS': '磁盘读IOPS',
+    'DiskWriteIOPS': '磁盘写IOPS',
+    'cpu_idle': 'CPU 空闲率',
+    'memory_usedspace': '内存已用空间',
+    'memory_totalspace': '内存总空间',
+    'diskusage_inode': 'inode 使用率',
+    'load_1m': '1分钟负载',
+    'load_15m': '15分钟负载',
+    'networkin_pps': '入网包速率',
+    'networkout_pps': '出网包速率',
+    'DiskReadLatency': '磁盘读延迟',
+    'DiskWriteLatency': '磁盘写延迟',
+    'GPUUtilization': 'GPU 使用率',
+    'GPUMemoryUtilization': 'GPU 内存使用率',
+    'IntranetInRate': '内网入向流量速率',
+    'IntranetOutRate': '内网出向流量速率',
+    'InternetInRate': '公网入向流量速率',
+    'InternetOutRate': '公网出向流量速率',
+    'SessionNewLimitDropConnection': '新建连接限速丢弃数',
+    'net_in.rate_percentage': '入网带宽使用率',
+    'ShardingMemoryUsage': '分片内存使用率',
+    'InstanceTrafficRXUtilization': '实例入向流量使用率',
+    'StandardConnectionUsage': '标准版连接数使用率',
+    'InstanceTrafficTXUtilization': '实例出向流量使用率',
+    'ShardingCpuUsage': '分片CPU使用率',
+    'ShardingConnectionUsage': '分片连接数使用率',
+    'StandardCpuUsage': '标准版CPU使用率',
+    'StandardMemoryUsage': '标准版内存使用率',
+    'net_out.rate_percentage': '出网带宽使用率',
+    'ConnectionUsageUtilization': '连接数使用率',
+    'IntranetInRatio': '内网入向带宽使用率',
+    'IntranetOutRatio': '内网出向带宽使用率',
+    'InternetInRatio': '公网入向带宽使用率',
+    'InternetOutRatio': '公网出向带宽使用率',
+    'CapacityUsedPercent': '容量使用百分比',
+    'check_point_create_success_eq_0_10min': 'Checkpoint创建成功次数为0(10分钟)',
+    'NumOfCheckpoints': 'Checkpoint数量',
+    'restart_gt_2_10min': '10分钟内重启次数超过2次',
+    'NumOfRestart': '重启次数',
+    'delay_gt_30_min': '延迟超过30分钟',
+    'CurrentEmitEventTimeLag': '当前事件时间延迟',
+    'ConsumerLagPerGidTopic': '消费者延迟(按Gid和Topic)',
+    'load_per_core_1m': '每核1分钟平均负载',
+    'diskusage_total': '磁盘总使用率',
+    'load_per_core_5m': '每核5分钟平均负载',
+    'load_per_core_15m': '每核15分钟平均负载',
+    'cpu_total_per_core': '每核CPU使用率',
+    'memory_usedutilization_per_core': '每核内存使用率',
+    'disk_readbytes_per_core': '每核磁盘读字节数',
+    'disk_writebytes_per_core': '每核磁盘写字节数',
+    'networkin_rate_per_core': '每核入网流量速率',
+    'networkout_rate_per_core': '每核出网流量速率',
+    'CPUUtilization': 'CPU使用率',
+    'one_second_executing_sqls': '1秒内执行的SQL数',
+    'iops_usage': 'IOPS使用率',
+    'mem_usage': '内存使用率',
+    'local_fs_size_usage': '本地文件系统使用率',
+    'cpu_usage': 'CPU使用率',
+    'one_second_executing_sqls_per_core': '每核1秒内执行的SQL数',
+    'iops_usage_per_core': '每核IOPS使用率',
+    'mem_usage_per_core': '每核内存使用率',
+    'local_fs_size_usage_per_core': '每核本地文件系统使用率',
+    'cpu_usage_per_core': '每核CPU使用率',
+    'ShardingDiskUtilization': '分片磁盘使用率',
+    'DiskUtilization': '磁盘使用率',
+    'ConnectionUtilization': '连接数使用率',
+    'storage_usage_percent': '存储使用百分比',
+    'CodeCount_5': '5XX状态码数量',
+    'CodeCount_4': '4XX状态码数量',
+    'LossQPSbyApp': '查询限流QPS',
+    'ComputeResourceRatiobyApp': '计算资源使用率',
+    'InstanceApiCallTps': '实例API调用频率',
+    'SendDLQMessageCountPerGidTopic': '每分钟死信消息数(按Group/Topic)',
+    'ReceiveMessageCountPerGid': '消费者每分钟接收消息数(按Group)',
+    'SendMessageCountPerTopic': '生产者每分钟发送消息数(按Topic)',
+    'LoadBalancerHTTPCode5XX': '负载均衡5XX状态码',
+    'vm.MemoryUtilization': '虚拟机内存使用率',
+    'New_connection': '新建连接数',
+    'AttackTraffic': '攻击流量',
+    'In_Traffic': '入向流量',
+    'NodeDiskUtilization': '节点磁盘使用率',
+    'NodeCPUUtilization': '节点CPU使用率',
+    'NodeHeapMemoryUtilization': '节点堆内存使用率',
+    'ClusterStatus': '集群状态',
+    'InstanceNewConnectionUtilization': '实例新建连接数使用率',
+    'Out_Traffic': '出向流量',
+    'MaxConnection': '最大连接数',
+    'ActiveConnection': '活跃连接数',
+    'DropConnection': '丢弃连接数',
+    'DropTraffic': '丢弃流量',
+    'TrafficLimit': '流量限制',
   }
 
   const fmtExpression = (expr) => {
@@ -3394,7 +3594,7 @@ function CloudMonitor() {
                     {selectedAccount === 'all' && <td>{a.account_name}</td>}
                     <td>{a.rule_name || '-'}</td>
                     <td>{NAMESPACE_MAP[a.namespace] || a.namespace || '-'}</td>
-                    <td>{a.metric_name || '-'}</td>
+                    <td>{METRIC_MAP[a.metric_name] || a.metric_name || '-'}</td>
                     <td>
                       <span className={`alarm-status ${ALARM_STATUS_MAP[a.alarm_status]?.className || 'alarm-unknown'}`}>
                         {ALARM_STATUS_MAP[a.alarm_status]?.label || a.alarm_status}
