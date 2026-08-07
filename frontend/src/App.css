@@ -434,7 +434,7 @@ body {
   padding: 3px 12px;
   border-radius: 20px;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: normal;
   letter-spacing: 0.2px;
   white-space: nowrap;
 }

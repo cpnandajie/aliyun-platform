@@ -1638,7 +1638,7 @@ function AccountManagement() {
           </div>
           {autoSync.last_sync_at && (
             <div className="auto-sync-last">
-              上次自动同步：{autoSync.last_sync_at}
+              上次自动同步：{fmtDate(autoSync.last_sync_at)}
             </div>
           )}
           {(() => {
@@ -1769,7 +1769,7 @@ function AccountManagement() {
                     <td className="td-mono">{acct.access_key_id}</td>
                     <td>{acct.remark || '-'}</td>
                     <td>¥{fmtMoney(acct.balance_threshold ?? 20000)}</td>
-                    <td>{acct.last_sync_at || '从未同步'}</td>
+                    <td>{acct.last_sync_at ? fmtDate(acct.last_sync_at) : '从未同步'}</td>
                     <td className="td-actions">
                       <button className="btn-link" onClick={() => handleSync(acct.id, 'all')} disabled={syncingIds[acct.id]}>
                         {syncingIds[acct.id] ? '同步中..' : '同步全部'}
@@ -2697,7 +2697,7 @@ function DnsManagement() {
                     <td style={{ color: '#555' }}>{d.holder || '-'}</td>
                     <td>{d.record_count}</td>
                     <td className="td-mono" style={{ color: d.end_time && (() => { const s=String(d.end_time).trim(); const ts=/^\d{10,13}$/.test(s)?(s.length===10?Number(s)*1000:Number(s)):new Date(s).getTime(); return !isNaN(ts)&&ts<Date.now() })() ? '#ef4444' : '#333' }}>
-                      {d.end_time ? (() => { const s=String(d.end_time).trim(); const ts=/^\d{10,13}$/.test(s)?(s.length===10?Number(s)*1000:Number(s)):new Date(s).getTime(); return isNaN(ts)?s:new Date(ts).toLocaleDateString() })() : '-'}
+                      {fmtDate(d.end_time)}
                     </td>
                     <td>{getDomainStatusTag(d)}</td>
                     <td style={{ whiteSpace: 'nowrap', textAlign: 'center' }}>
