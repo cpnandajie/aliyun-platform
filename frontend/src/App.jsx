@@ -152,6 +152,7 @@ function Sidebar({ activeMenu, onMenuChange }) {
     { key: 'overview', label: '资源概览', icon: '' },
     { key: 'resources', label: '资源管理', icon: '' },
     { key: 'network', label: '网络管理', icon: '' },
+    { key: 'publicip', label: '公网大全', icon: '' },
     { key: 'bills', label: '账单管理', icon: '' },
     { key: 'ram', label: 'RAM 管理', icon: '' },
     { key: 'dns', label: '域名管理', icon: '' },
@@ -316,25 +317,62 @@ const REGION_LABELS = {
   'eu-west-1': '英国（伦敦）', 'eu-central-1': '德国（法兰克福）', 'me-east-1': '阿联酋（迪拜）',
 }
 
+// ==================== 通用 Hooks ====================
+
+function useSortable(defaultKey = '', defaultDir = 'asc') {
+  const [sortKey, setSortKey] = useState(defaultKey)
+  const [sortDir, setSortDir] = useState(defaultDir)
+  const handleSort = (key) => {
+    if (sortKey === key) {
+      setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortKey(key)
+      setSortDir('asc')
+    }
+  }
+  const sortArrow = (key) => {
+    if (sortKey !== key) return ' ↕'
+    return sortDir === 'asc' ? ' ↑' : ' ↓'
+  }
+  const sortData = (data, columns) => {
+    if (!sortKey) return data
+    return [...data].sort((a, b) => {
+      const va = a[sortKey], vb = b[sortKey]
+      if (va == null && vb == null) return 0
+      if (va == null) return 1
+      if (vb == null) return -1
+      const col = columns?.find(c => c.key === sortKey)
+      if (col?.type === 'number' || typeof va === 'number') {
+        const na = Number(va), nb = Number(vb)
+        if (!isNaN(na) && !isNaN(nb)) return sortDir === 'asc' ? na - nb : nb - na
+      }
+      return sortDir === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va))
+    })
+  }
+  return { sortKey, sortDir, setSortKey, setSortDir, handleSort, sortArrow, sortData }
+}
+
+function useDebounceSearch(initialDelay = 300) {
+  const [keyword, setKeyword] = useState('')
+  const [searchKeyword, setSearchKeyword] = useState('')
+  useEffect(() => {
+    const t = setTimeout(() => setSearchKeyword(keyword), initialDelay)
+    return () => clearTimeout(t)
+  }, [keyword, initialDelay])
+  const resetSearch = () => { setKeyword(''); setSearchKeyword('') }
+  return { keyword, setKeyword, searchKeyword, resetSearch }
+}
+
+// ==================== 通用渲染工具 ====================
+
+const nowrap = v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span>
+const renderRegion = v => nowrap(REGION_LABELS[v] || v)
+
 // ==================== 资源概览页面 ====================
 function ResourceOverview() {
   const [overview, setOverview] = useState([])
   const [loading, setLoading] = useState(false)
-  // 各账号资源排序
-  const [ovSortKey, setOvSortKey] = useState('')
-  const [ovSortDir, setOvSortDir] = useState('asc')
-  const handleOvSort = (key) => {
-    if (ovSortKey === key) {
-      setOvSortDir(ovSortDir === 'asc' ? 'desc' : 'asc')
-    } else {
-      setOvSortKey(key)
-      setOvSortDir('asc')
-    }
-  }
-  const ovSortArrow = (key) => {
-    if (ovSortKey !== key) return ' ↕'
-    return ovSortDir === 'asc' ? ' ↑' : ' ↓'
-  }
+  const { sortKey: ovSortKey, sortDir: ovSortDir, handleSort: handleOvSort, sortArrow: ovSortArrow } = useSortable()
 
   const loadData = useCallback(() => {
     setLoading(true)
@@ -351,8 +389,8 @@ function ResourceOverview() {
   const totalSlb = overview.reduce((s, a) => s + a.slb_count, 0)
   const totalOss = overview.reduce((s, a) => s + a.oss_count, 0)
   const totalRedis = overview.reduce((s, a) => s + a.redis_count, 0)
-  const totalMonthAmount = overview.reduce((s, a) => s + a.month_amount, 0)
-  const totalBalance = overview.reduce((s, a) => s + a.available_amount, 0)
+  const totalMonthAmount = overview.filter(a => a.currency !== 'SGD').reduce((s, a) => s + a.month_amount, 0)
+  const totalBalance = overview.filter(a => a.currency !== 'SGD').reduce((s, a) => s + a.available_amount, 0)
 
   // 首次加载显示骨架屏
   if (loading && overview.length === 0) {
@@ -394,7 +432,7 @@ function ResourceOverview() {
           <div className="card-value">¥{fmtMoney(totalMonthAmount)}</div>
           <div className="card-label">本月消费</div>
         </div>
-        <div className={`summary-card balance${totalBalance < overview.reduce((s, a) => s + (a.balance_threshold || 20000), 0) ? ' low' : ''}`}>
+        <div className="summary-card balance">
           <div className="card-value">¥{fmtMoney(totalBalance)}</div>
           <div className="card-label">可用额度</div>
         </div>
@@ -440,7 +478,9 @@ function ResourceOverview() {
                   }
                   const sa = String(va), sb = String(vb)
                   return ovSortDir === 'asc' ? sa.localeCompare(sb) : sb.localeCompare(sa)
-                }).map(item => (
+                }).map(item => {
+                  const sym = item.currency === 'SGD' ? 'SGD ' : '¥'
+                  return (
                   <tr key={item.account_id}>
                     <td>{item.account_name}</td>
                     <td>{item.remark || '-'}</td>
@@ -449,16 +489,18 @@ function ResourceOverview() {
                     <td>{item.slb_count}</td>
                     <td>{item.oss_count}</td>
                     <td>{item.redis_count}</td>
-                    <td className="td-amount">¥{fmtMoney(item.month_amount)}</td>
-                    <td className={(item.available_amount < (item.balance_threshold || 20000)) ? 'td-amount-danger' : 'td-amount'}>¥{fmtMoney(item.available_amount)}</td>
+                    <td className="td-amount">{sym}{fmtMoney(item.month_amount)}</td>
+                    <td className={(item.available_amount < (item.balance_threshold || 20000)) ? 'td-amount-danger' : 'td-amount'}>{sym}{fmtMoney(item.available_amount)}</td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
         )}
       </div>
       <div className="page-note">* 当账号的可用额度低于其设定的预警阈值时，将以<span style={{ color: '#ef4444', fontWeight: 600 }}>红色</span>显示，可在账号设置中自定义每个账号的阈值。</div>
+      <div className="page-note">* 右上角的「本月消费」和「可用额度」汇总仅统计人民币账户，新加坡元账户不参与汇总。</div>
     </div>
   )
 }
@@ -474,14 +516,13 @@ function ResourceManagement() {
   const [regionFilter, setRegionFilter] = useState('')
   const [data, setData] = useState([])
   const [loading, setLoading] = useState(false)
-  const [sortKey, setSortKey] = useState('')
-  const [sortDir, setSortDir] = useState('asc')
+  const { sortKey, sortDir, setSortKey, setSortDir, handleSort, sortArrow } = useSortable()
   const [regions, setRegions] = useState([])
 
   // 各Tab的列定义（sortable标记可排序列）
   const tabColumns = {
     ecs: [
-      { key: 'account_name', label: '账号', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span> },
+      { key: 'account_name', label: '账号', sortable: true, render: nowrap },
       { key: 'instance_id', label: '实例ID', sortable: true },
       { key: 'instance_name', label: '实例名称', sortable: true },
       { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{STATUS_LABELS[v] || v}</span> },
@@ -490,14 +531,14 @@ function ResourceManagement() {
       { key: 'memory_gb', label: '内存(GB)', sortable: true },
       { key: 'private_ip', label: '内网IP', sortable: true },
       { key: 'public_ip', label: '公网IP', sortable: true },
-      { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
+      { key: 'region_id', label: '区域', sortable: true, render: renderRegion },
       { key: 'renewal_price', label: '月续费', sortable: true, render: (v, row) => {
         if (v !== null && v !== undefined) return <span style={{ color: '#e67e22', fontWeight: 500 }}>¥{fmtMoney(v)}</span>
         return <span style={{ color: '#94a3b8' }}>-</span>
       }},
     ],
     rds: [
-      { key: 'account_name', label: '账号', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span> },
+      { key: 'account_name', label: '账号', sortable: true, render: nowrap },
       { key: 'instance_id', label: '实例ID', sortable: true },
       { key: 'instance_name', label: '实例名称', sortable: true },
       { key: 'engine', label: '引擎', sortable: true },
@@ -515,24 +556,24 @@ function ResourceManagement() {
         if (storage >= 1024) return `${(storage / 1024).toFixed(1)}TB`
         return `${storage}GB`
       }},
-      { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
+      { key: 'region_id', label: '区域', sortable: true, render: renderRegion },
       { key: 'renewal_price', label: '月续费', sortable: true, render: (v, row) => {
         if (v !== null && v !== undefined) return <span style={{ color: '#e67e22', fontWeight: 500 }}>¥{fmtMoney(v)}</span>
         return <span style={{ color: '#94a3b8' }}>-</span>
       }},
     ],
     slb: [
-      { key: 'account_name', label: '账号', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span> },
+      { key: 'account_name', label: '账号', sortable: true, render: nowrap },
       { key: 'instance_id', label: '实例ID', sortable: true },
       { key: 'instance_name', label: '实例名称', sortable: true },
       { key: 'address', label: '地址', sortable: true, className: 'td-mono' },
       { key: 'address_type', label: '地址类型', sortable: true, render: v => ({ internet: '公网', intranet: '内网' }[v] || v) },
       { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{({ active: '运行中', inactive: '已停止', locked: '已锁定' }[v] || STATUS_LABELS[v] || v)}</span> },
       { key: 'network_type', label: '网络类型', sortable: true, render: v => ({ vpc: 'VPC', classic: '经典网络' }[v] || v) },
-      { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
+      { key: 'region_id', label: '区域', sortable: true, render: renderRegion },
     ],
     oss: [
-      { key: 'account_name', label: '账号', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span> },
+      { key: 'account_name', label: '账号', sortable: true, render: nowrap },
       { key: 'bucket_name', label: 'Bucket名称', sortable: true, className: 'td-mono' },
       { key: 'location', label: '区域', sortable: true, render: v => {
         const regionId = v?.replace(/^oss-/, '') || v
@@ -542,13 +583,13 @@ function ResourceManagement() {
       { key: 'creation_date', label: '创建时间', sortable: true, render: v => fmtDate(v) },
     ],
     redis: [
-      { key: 'account_name', label: '账号', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span> },
+      { key: 'account_name', label: '账号', sortable: true, render: nowrap },
       { key: 'instance_id', label: '实例ID', sortable: true },
       { key: 'instance_name', label: '实例名称', sortable: true },
       { key: 'architecture_type', label: '架构', sortable: true, render: v => ({ standard: '标准版', cluster: '集群版', rwsplit: '读写分离版' }[v] || v) },
       { key: 'capacity', label: '容量', sortable: true },
       { key: 'engine_version', label: '版本', sortable: true },
-      { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
+      { key: 'region_id', label: '区域', sortable: true, render: renderRegion },
       { key: 'renewal_price', label: '月续费', sortable: true, render: (v, row) => {
         if (v !== null && v !== undefined) return <span style={{ color: '#e67e22', fontWeight: 500 }}>¥{fmtMoney(v)}</span>
         return <span style={{ color: '#94a3b8' }}>-</span>
@@ -603,15 +644,6 @@ function ResourceManagement() {
     setSortDir('asc')
   }
 
-  const handleSort = (key) => {
-    if (sortKey === key) {
-      setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
-    } else {
-      setSortKey(key)
-      setSortDir('asc')
-    }
-  }
-
   // 排序后的数据
   const sortedData = (() => {
     if (!sortKey) return data
@@ -658,11 +690,6 @@ function ResourceManagement() {
     const raw = item[col.key]
     if (col.render) return col.render(raw, item)
     return raw || '-'
-  }
-
-  const sortArrow = (key) => {
-    if (sortKey !== key) return ' ↕'
-    return sortDir === 'asc' ? ' ↑' : ' ↓'
   }
 
   const tabs = [
@@ -801,12 +828,492 @@ function ResourceManagement() {
   )
 }
 
+// ==================== 公网大全页面 ====================
+function PublicIPManagement() {
+  const toast = useToast()
+  const [allIPs, setAllIPs] = useState([])
+  const [accounts, setAccounts] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [sourceFilter, setSourceFilter] = useState('')
+  const [accountFilter, setAccountFilter] = useState('')
+  const [keyword, setKeyword] = useState('')
+  const [showForm, setShowForm] = useState(false)
+  const [editingIP, setEditingIP] = useState(null)
+  const [formData, setFormData] = useState({ source: 'huawei', ip_address: '', remark: '' })
+  const { sortKey, sortDir, handleSort, sortArrow, sortData } = useSortable()
+  const [confirmState, setConfirmState] = useState(null)
+  const showConfirm = (msg) => new Promise(resolve => {
+    setConfirmState({ msg, onConfirm: () => { resolve(true); setConfirmState(null) }, onCancel: () => { resolve(false); setConfirmState(null) } })
+  })
+  // 导入相关
+  const importFileRef = useRef(null)
+  const [importData, setImportData] = useState(null) // { items: [...], fileName: '' }
+  const [importing, setImporting] = useState(false)
+  // 来源名称配置
+  const [sourceLabels, setSourceLabels] = useState([{ source: 'huawei', label: '华为云' }, { source: 'idc', label: 'IDC' }, { source: 'office', label: '居然大厦' }])
+  const [showLabelSettings, setShowLabelSettings] = useState(false)
+  const [editLabels, setEditLabels] = useState([])
+  const [newSourceName, setNewSourceName] = useState('')
+
+  const SOURCE_COLORS = {
+    aliyun_eip: { bg: '#eef2ff', color: '#4f46e5', border: '#c7d2fe' },
+    aliyun_slb: { bg: '#eef2ff', color: '#4f46e5', border: '#c7d2fe' },
+    huawei: { bg: '#fef2f2', color: '#dc2626', border: '#fecaca' },
+    idc: { bg: '#f0fdf4', color: '#16a34a', border: '#bbf7d0' },
+    office: { bg: '#fefce8', color: '#ca8a04', border: '#fef08a' },
+  }
+
+  const loadData = useCallback(() => {
+    setLoading(true)
+    axios.get('/api/public-ips')
+      .then(res => setAllIPs(res.data))
+      .catch(err => console.error('加载公网IP失败:', err))
+      .finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => { loadData() }, [loadData])
+
+  useEffect(() => {
+    axios.get('/api/accounts').then(res => setAccounts(res.data)).catch(() => {})
+    axios.get('/api/source-labels').then(res => setSourceLabels(res.data)).catch(() => {})
+  }, [])
+
+  const labelMap = Object.fromEntries(sourceLabels.map(s => [s.source, s.label]))
+
+  const openLabelSettings = () => {
+    setEditLabels(sourceLabels.map(s => ({ ...s })))
+    setShowLabelSettings(true)
+  }
+
+  const saveLabels = () => {
+    axios.put('/api/source-labels', editLabels)
+      .then(() => {
+        setSourceLabels(editLabels)
+        setShowLabelSettings(false)
+        toast.success('来源名称已更新')
+      })
+      .catch(err => toast.error('保存失败: ' + (err.response?.data?.error || err.message)))
+  }
+
+  const handleAdd = () => {
+    setFormData({ source: 'huawei', ip_address: '', remark: '' })
+    setEditingIP(null)
+    setShowForm(true)
+  }
+  const handleEdit = (ip) => {
+    setFormData({ source: ip.source, ip_address: ip.ip_address, remark: ip.remark || '' })
+    setEditingIP(ip)
+    setShowForm(true)
+  }
+  const handleSubmit = () => {
+    if (!formData.ip_address.trim()) {
+      toast.warning('请填写IP地址')
+      return
+    }
+    if (editingIP) {
+      axios.put(`/api/public-ips/${editingIP.id}`, formData)
+        .then(() => { toast.success('更新成功'); setShowForm(false); loadData() })
+        .catch(err => toast.error('更新失败: ' + (err.response?.data?.error || err.message)))
+    } else {
+      // 支持多个IP，按换行/逗号/空格分隔
+      const ips = formData.ip_address.split(/[\n,\s]+/).map(s => s.trim()).filter(Boolean)
+      if (ips.length === 0) {
+        toast.warning('请填写IP地址')
+        return
+      }
+      const items = ips.map(ip => ({ source: formData.source, ip_address: ip, remark: formData.remark }))
+      axios.post('/api/public-ips/batch-import', { items })
+        .then(res => { toast.success(res.data.message); setShowForm(false); loadData() })
+        .catch(err => toast.error('添加失败: ' + (err.response?.data?.error || err.message)))
+    }
+  }
+  const handleDelete = async (ip) => {
+    const ok = await showConfirm(`确定要删除 IP「${ip.ip_address}」吗？`)
+    if (!ok) return
+    axios.delete(`/api/public-ips/${ip.id}`)
+      .then(() => { toast.success('删除成功'); loadData() })
+      .catch(err => toast.error('删除失败: ' + (err.response?.data?.error || err.message)))
+  }
+
+  // 动态加载 SheetJS
+  const loadXLSX = () => new Promise((resolve, reject) => {
+    if (window.XLSX) return resolve(window.XLSX)
+    const script = document.createElement('script')
+    script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
+    script.onload = () => resolve(window.XLSX)
+    script.onerror = () => reject(new Error('加载Excel解析库失败'))
+    document.head.appendChild(script)
+  })
+
+  // 下载Excel模板
+  const handleDownloadTemplate = async () => {
+    try {
+      const XLSX = await loadXLSX()
+      const wsData = [
+        ['来源', 'IP地址', '备注'],
+        [labelMap.huawei || '华为云', '1.2.3.4', '示例IP'],
+        [labelMap.idc || 'IDC', '5.6.7.8', '办公网络'],
+        [labelMap.office || '居然大厦', '9.10.11.12', '大厦出口'],
+      ]
+      const ws = XLSX.utils.aoa_to_sheet(wsData)
+      ws['!cols'] = [{ wch: 12 }, { wch: 18 }, { wch: 20 }]
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, '公网IP')
+      XLSX.writeFile(wb, '公网IP导入模板.xlsx')
+    } catch (err) {
+      toast.error('生成模板失败')
+    }
+  }
+
+  // 解析Excel文件（支持动态标签名称）
+  const SOURCE_MAP = {
+    'huawei': 'huawei', 'idc': 'idc', 'office': 'office',
+    '华为云': 'huawei', 'IDC': 'idc', '居然大厦': 'office', '办公大厦': 'office',
+    [labelMap.huawei]: 'huawei', [labelMap.idc]: 'idc', [labelMap.office]: 'office',
+  }
+  const handleFileSelect = async (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    try {
+      const XLSX = await loadXLSX()
+      const data = await file.arrayBuffer()
+      const wb = XLSX.read(data, { type: 'array' })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1 })
+      if (rows.length < 2) {
+        toast.warning('文件内容为空或只有表头')
+        return
+      }
+      const items = []
+      for (let i = 1; i < rows.length; i++) {
+        const cols = rows[i].map(c => String(c || '').trim())
+        const sourceRaw = cols[0] || ''
+        const source = SOURCE_MAP[sourceRaw] || ''
+        const ip_address = cols[1] || ''
+        const remark = cols.slice(2).join(',') || ''
+        if (ip_address) {
+          items.push({ source, ip_address, remark, _sourceLabel: sourceRaw, _line: i + 1 })
+        }
+      }
+      if (items.length === 0) {
+        toast.warning('未解析到有效数据')
+        return
+      }
+      setImportData({ items, fileName: file.name })
+    } catch (err) {
+      toast.error('解析文件失败: ' + err.message)
+    }
+    e.target.value = ''
+  }
+
+  // 确认导入
+  const handleImportConfirm = () => {
+    if (!importData) return
+    setImporting(true)
+    const items = importData.items.map(({ source, ip_address, remark }) => ({ source, ip_address, remark }))
+    axios.post('/api/public-ips/batch-import', { items })
+      .then(res => {
+        toast.success(res.data.message)
+        setImportData(null)
+        loadData()
+      })
+      .catch(err => toast.error('导入失败: ' + (err.response?.data?.error || err.message)))
+      .finally(() => setImporting(false))
+  }
+
+  // 导出Excel
+  const SOURCE_LABELS = { aliyun_eip: '阿里云·EIP', aliyun_slb: '阿里云·SLB', huawei: labelMap.huawei || '华为云', idc: labelMap.idc || 'IDC', office: labelMap.office || '居然大厦' }
+  const handleExport = async () => {
+    if (filtered.length === 0) {
+      toast.warning('没有可导出的数据')
+      return
+    }
+    try {
+      const XLSX = await loadXLSX()
+      const rows = filtered.map(ip => [
+        SOURCE_LABELS[ip.source] || ip.source,
+        ip.account_name || '-',
+        ip.ip_address,
+        ip.instance_name || '-',
+        ip.detail || '-',
+        ip.region || '-',
+        ip.remark || '-',
+      ])
+      const wsData = [['来源', '账号', 'IP地址', '实例名称', '详情', '区域', '备注'], ...rows]
+      const ws = XLSX.utils.aoa_to_sheet(wsData)
+      ws['!cols'] = [{ wch: 12 }, { wch: 16 }, { wch: 18 }, { wch: 20 }, { wch: 16 }, { wch: 14 }, { wch: 20 }]
+      const wb = XLSX.utils.book_new()
+      XLSX.utils.book_append_sheet(wb, ws, '公网IP')
+      XLSX.writeFile(wb, `公网大全_${new Date().toISOString().slice(0, 10)}.xlsx`)
+    } catch (err) {
+      toast.error('导出失败')
+    }
+  }
+
+  const handleReset = () => {
+    setKeyword('')
+    setSourceFilter('')
+    setAccountFilter('')
+  }
+
+  // 筛选
+  const filtered = allIPs.filter(ip => {
+    if (sourceFilter && sourceFilter === 'aliyun') {
+      if (ip.source !== 'aliyun_eip' && ip.source !== 'aliyun_slb') return false
+    } else if (sourceFilter && ip.source !== sourceFilter) return false
+    if (accountFilter && String(ip.account_id) !== accountFilter) return false
+    if (keyword.trim()) {
+      const kw = keyword.trim().toLowerCase()
+      if (!(ip.ip_address || '').toLowerCase().includes(kw) &&
+          !(ip.account_name || '').toLowerCase().includes(kw) &&
+          !(ip.instance_name || '').toLowerCase().includes(kw) &&
+          !(ip.remark || '').toLowerCase().includes(kw)) return false
+    }
+    return true
+  })
+
+  // 排序
+  const sorted = sortData(filtered)
+
+  // 统计
+  const stats = {
+    total: allIPs.length,
+    aliyun: allIPs.filter(i => i.source === 'aliyun_eip' || i.source === 'aliyun_slb').length,
+    ...Object.fromEntries(sourceLabels.map(s => [s.source, allIPs.filter(i => i.source === s.source).length])),
+  }
+
+  return (
+    <div className="page-content">
+      <div className="page-header">
+        <h2>公网大全</h2>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button className="btn-refresh" onClick={loadData} disabled={loading}>
+            {loading ? '刷新中..' : '刷新'}
+          </button>
+          <button className="btn-default" onClick={handleDownloadTemplate}>下载Excel模板</button>
+          <button className="btn-default" onClick={() => importFileRef.current?.click()}>导入Excel</button>
+          <button className="btn-default" onClick={handleExport}>导出Excel</button>
+          <input ref={importFileRef} type="file" accept=".xlsx,.xls" style={{ display: 'none' }} onChange={handleFileSelect} />
+          <button className="btn-default" onClick={openLabelSettings}>来源设置</button>
+          <button className="btn-primary" onClick={handleAdd}>添加IP</button>
+        </div>
+      </div>
+
+      {/* 统计卡片 */}
+      <div className="resource-tabs" style={{ marginBottom: 18 }}>
+        {[
+          { key: '', label: '全部', count: stats.total },
+          { key: 'aliyun', label: '阿里云', count: stats.aliyun },
+          ...sourceLabels.map(s => ({ key: s.source, label: s.label, count: stats[s.source] || 0 })),
+        ].map(item => (
+          <div key={item.key}
+            className={`resource-tab${sourceFilter === item.key ? ' active' : ''}`}
+            onClick={() => setSourceFilter(item.key)}
+            style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {item.label}
+            <span style={{ fontSize: 12, background: sourceFilter === item.key ? 'rgba(99,102,241,0.1)' : '#f1f5f9', color: sourceFilter === item.key ? '#6366f1' : '#94a3b8', padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>{item.count}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* 搜索框 */}
+      <div className="search-bar" style={{ marginBottom: 12 }}>
+        <select value={accountFilter} onChange={e => setAccountFilter(e.target.value)}>
+          <option value="">全部账号</option>
+          {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+        </select>
+        <input type="text" value={keyword} onChange={e => setKeyword(e.target.value)}
+          placeholder="搜索IP/账号/实例/备注" />
+        <button className="btn-default" onClick={handleReset}>重置</button>
+      </div>
+
+      {/* 添加/编辑表单 */}
+      {showForm && (
+        <div className="section-block form-section" style={{ marginBottom: 16 }}>
+          <h3>{editingIP ? '编辑IP' : '添加公网IP'}</h3>
+          <div className="form-grid" style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
+            <div className="form-item">
+              <label>来源 <span className="required">*</span></label>
+              <select value={formData.source} onChange={e => setFormData(prev => ({ ...prev, source: e.target.value }))}>
+                {sourceLabels.map(s => <option key={s.source} value={s.source}>{s.label}</option>)}
+              </select>
+            </div>
+            <div className="form-item">
+              <label>IP地址 <span className="required">*</span></label>
+              {editingIP ? (
+                <input type="text" value={formData.ip_address} onChange={e => setFormData(prev => ({ ...prev, ip_address: e.target.value }))} placeholder="请输入公网IP地址" />
+              ) : (
+                <textarea value={formData.ip_address} onChange={e => setFormData(prev => ({ ...prev, ip_address: e.target.value }))} placeholder="支持多个IP，每行一个，或用逗号/空格分隔" rows={3} style={{ resize: 'vertical' }} />
+              )}
+            </div>
+            <div className="form-item">
+              <label>备注</label>
+              <input type="text" value={formData.remark} onChange={e => setFormData(prev => ({ ...prev, remark: e.target.value }))} placeholder="备注信息" />
+            </div>
+          </div>
+          <div className="form-actions">
+            <button className="btn-primary" onClick={handleSubmit}>确定</button>
+            <button className="btn-default" onClick={() => setShowForm(false)}>取消</button>
+          </div>
+        </div>
+      )}
+
+      {/* 表格 */}
+      {sorted.length === 0 ? (
+        <div className="empty-state">{loading ? '加载中...' : '暂无数据'}</div>
+      ) : (
+        <div className="overview-table-wrap">
+          <table className="data-table">
+            <thead>
+              <tr>
+                {[
+                  { key: 'source_label', label: '来源' },
+                  { key: 'account_name', label: '账号' },
+                  { key: 'ip_address', label: 'IP地址' },
+                  { key: 'instance_name', label: '实例名称' },
+                  { key: 'detail', label: '详情' },
+                  { key: 'region', label: '区域' },
+                  { key: 'remark', label: '备注' },
+                ].map(col => (
+                  <th key={col.key} style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleSort(col.key)}>
+                    {col.label}{sortArrow(col.key)}
+                  </th>
+                ))}
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map(ip => {
+                const sc = SOURCE_COLORS[ip.source] || { bg: '#f8fafc', color: '#64748b', border: '#e2e8f0' }
+                const isManual = ['huawei', 'idc', 'office'].includes(ip.source)
+                return (
+                  <tr key={ip.id ? `m-${ip.id}` : `${ip.source}-${ip.ip_address}-${ip.instance_id}`}>
+                    <td>
+                      <span style={{ display: 'inline-block', padding: '2px 10px', borderRadius: 12, fontSize: 12, background: sc.bg, color: sc.color, border: `1px solid ${sc.border}`, whiteSpace: 'nowrap' }}>
+                        {ip.source === 'aliyun_eip' || ip.source === 'aliyun_slb' ? `阿里云·${ip.source === 'aliyun_eip' ? 'EIP' : 'SLB'}` : ip.source_label}
+                      </span>
+                    </td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{ip.account_name || '-'}</td>
+                    <td className="td-mono" style={{ fontWeight: 500 }}>{ip.ip_address}</td>
+                    <td>{ip.instance_name || '-'}</td>
+                    <td>{ip.detail || '-'}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[ip.region] || ip.region || '-'}</td>
+                    <td>{ip.remark || '-'}</td>
+                    <td className="td-actions">
+                      {isManual ? (
+                        <>
+                          <button className="btn-link" onClick={() => handleEdit(ip)}>编辑</button>
+                          <button className="btn-link btn-danger-link" onClick={() => handleDelete(ip)}>删除</button>
+                        </>
+                      ) : (
+                        <span>自动同步</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {confirmState && (
+        <ConfirmModal
+          message={confirmState.msg}
+          onConfirm={confirmState.onConfirm}
+          onCancel={confirmState.onCancel}
+        />
+      )}
+      {showLabelSettings && (
+        <div className="modal-overlay">
+          <div className="modal-box" style={{ width: 460, textAlign: 'left' }}>
+            <h3 style={{ margin: '0 0 8px' }}>来源名称设置</h3>
+            <p style={{ color: '#64748b', fontSize: 13, margin: '0 0 16px' }}>自定义来源显示名称，删除来源将同时删除关联的公网IP</p>
+            {editLabels.map((item, idx) => (
+              <div key={item.source} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <span style={{ width: 80, fontSize: 13, color: '#64748b', flexShrink: 0 }}>{item.source}</span>
+                <input
+                  type="text"
+                  value={item.label}
+                  onChange={e => {
+                    const next = [...editLabels]
+                    next[idx] = { ...next[idx], label: e.target.value }
+                    setEditLabels(next)
+                  }}
+                  style={{ flex: 1, padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 14 }}
+                />
+                <button className="btn-link btn-danger-link" onClick={() => {
+                  if (editLabels.length <= 1) { toast.warning('至少保留一个来源'); return }
+                  setEditLabels(editLabels.filter((_, i) => i !== idx))
+                }} style={{ fontSize: 13, whiteSpace: 'nowrap' }}>删除</button>
+              </div>
+            ))}
+            <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center' }}>
+              <input type="text" value={newSourceName} onChange={e => setNewSourceName(e.target.value)} placeholder="输入来源标识（英文）" style={{ flex: 1, padding: '6px 10px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 13 }} />
+              <button className="btn-link" onClick={() => {
+                if (!newSourceName.trim()) { toast.warning('请输入来源标识'); return }
+                const key = newSourceName.trim().toLowerCase()
+                if (editLabels.some(s => s.source === key)) { toast.warning('该来源已存在'); return }
+                setEditLabels([...editLabels, { source: key, label: newSourceName.trim() }])
+                setNewSourceName('')
+              }}>+ 新增来源</button>
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 20 }}>
+              <button className="btn-default" onClick={() => setShowLabelSettings(false)}>取消</button>
+              <button className="btn-primary" onClick={saveLabels}>保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {importData && (
+        <div className="modal-overlay">
+          <div className="modal-box" style={{ width: 680, maxHeight: '80vh', display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
+            <h3 style={{ margin: '0 0 8px' }}>导入预览 — {importData.fileName}</h3>
+            <p style={{ color: '#64748b', fontSize: 13, margin: '0 0 12px' }}>共解析 {importData.items.length} 条数据，请确认后导入</p>
+            <div style={{ flex: 1, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 8, marginBottom: 16 }}>
+              <table className="data-table" style={{ margin: 0 }}>
+                <thead>
+                  <tr>
+                    <th>行号</th>
+                    <th>来源</th>
+                    <th>IP地址</th>
+                    <th>备注</th>
+                    <th>状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {importData.items.map((item, idx) => (
+                    <tr key={idx}>
+                      <td>{item._line}</td>
+                      <td>{item._sourceLabel || item.source}</td>
+                      <td className="td-mono">{item.ip_address}</td>
+                      <td>{item.remark || '-'}</td>
+                      <td>{item.source ? <span style={{ color: '#16a34a' }}>✓</span> : <span style={{ color: '#ef4444' }}>来源无效</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button className="btn-default" onClick={() => setImportData(null)}>取消</button>
+              <button className="btn-primary" onClick={handleImportConfirm} disabled={importing}>
+                {importing ? '导入中..' : `确认导入 (${importData.items.length}条)`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ==================== 账单管理页面 ====================
 function BillManagement() {
   const [billingCycle, setBillingCycle] = useState('')
   const [availableCycles, setAvailableCycles] = useState([])
   const [bills, setBills] = useState([])
   const [totalAmount, setTotalAmount] = useState(0)
+  const [totalPaid, setTotalPaid] = useState(0)
+  const [totalUnpaid, setTotalUnpaid] = useState(0)
   const [loading, setLoading] = useState(false)
   const [selectedBill, setSelectedBill] = useState(null)
   const [prevMonthData, setPrevMonthData] = useState({ total: 0, accounts: {}, accountDetails: {} })
@@ -818,6 +1325,61 @@ function BillManagement() {
   const [billsSort, setBillsSort] = useState({ key: '', dir: 'asc' })
   const [detailSort, setDetailSort] = useState({ key: '', dir: 'asc' })
   const [hideZeroBills, setHideZeroBills] = useState(false)
+  const [historySyncing, setHistorySyncing] = useState(false)
+  const [historyStartMonth, setHistoryStartMonth] = useState('2026-01')
+  const [confirmState, setConfirmState] = useState(null)
+  const showConfirm = (msg) => new Promise(resolve => setConfirmState({ msg, onConfirm: () => { setConfirmState(null); resolve(true) }, onCancel: () => { setConfirmState(null); resolve(false) } }))
+
+  // 同步历史账单
+  const syncHistoryBills = async () => {
+    if (historySyncing) return
+    if (!historyStartMonth) {
+      toast.warning('请选择同步开始月份')
+      return
+    }
+    const ok = await showConfirm(`将从 ${historyStartMonth} 开始同步到当前月份的所有账单，可能需要几分钟，确定继续？`)
+    if (!ok) return
+    setHistorySyncing(true)
+    try {
+      // 获取所有账号
+      const acctRes = await axios.get('/api/accounts')
+      const accounts = acctRes.data || []
+      const tasks = []
+      for (const acct of accounts) {
+        const res = await axios.post(`/api/accounts/${acct.id}/sync-history-bills`, { start_month: historyStartMonth })
+        if (res.data.success) {
+          tasks.push({ account_id: acct.id, name: acct.name, task_id: res.data.task_id })
+        }
+      }
+      // 轮询等待所有任务完成
+      let allDone = false
+      while (!allDone) {
+        await new Promise(r => setTimeout(r, 3000))
+        allDone = true
+        for (const task of tasks) {
+          const statusRes = await axios.get(`/api/sync-status/${task.task_id}`)
+          const status = statusRes.data
+          if (status.status === 'running' || status.status === 'pending') {
+            allDone = false
+          }
+        }
+      }
+      // 汇总结果
+      const results = []
+      for (const task of tasks) {
+        const statusRes = await axios.get(`/api/sync-status/${task.task_id}`)
+        results.push({ name: task.name, ...statusRes.data })
+      }
+      const successCount = results.filter(r => r.status === 'done').length
+      toast.success(`历史账单同步完成，成功: ${successCount}/${results.length} 个账号`)
+      // 刷新数据
+      loadData()
+    } catch (err) {
+      toast.error('同步失败: ' + (err.response?.data?.message || err.message))
+    } finally {
+      setHistorySyncing(false)
+    }
+  }
 
   const loadData = useCallback((cycle) => {
     setLoading(true)
@@ -834,28 +1396,19 @@ function BillManagement() {
       .then(([currRes, prevRes]) => {
         setBills(currRes.data.bills)
         setTotalAmount(currRes.data.total_amount)
+        setTotalPaid(currRes.data.total_paid || 0)
+        setTotalUnpaid(currRes.data.total_unpaid || 0)
         setAvailableCycles(currRes.data.available_cycles)
-        // 保存上月数据
+        // 保存上月数据（明细汇总已由后端计算）
         const prevAccounts = {}
-        const prevAccountDetails = {}
         ;(prevRes.data.bills || []).forEach(b => {
           prevAccounts[b.account_id] = b.total_amount
-          // 按产品类型合并上月明细
-          const merged = {}
-          ;(b.details || []).forEach(d => {
-            const code = d.product_code || d.product_type || 'other'
-            const detail = d.product_detail || d.product_type || '-'
-            const key = `${code}__${detail}`
-            if (!merged[key]) {
-              merged[key] = { pretax_amount: 0, cash_amount: 0, deduct_amount: 0 }
-            }
-            merged[key].pretax_amount += parseFloat(d.pretax_amount || 0)
-            merged[key].cash_amount += parseFloat(d.cash_amount || 0)
-            merged[key].deduct_amount += parseFloat(d.deduct_amount || 0)
-          })
-          prevAccountDetails[b.account_id] = merged
         })
-        setPrevMonthData({ total: prevRes.data.total_amount || 0, accounts: prevAccounts, accountDetails: prevAccountDetails })
+        setPrevMonthData({
+          total: prevRes.data.total_amount || 0,
+          accounts: prevAccounts,
+          accountDetails: prevRes.data.account_details_summary || {}
+        })
       })
       .catch(err => console.error('加载账单失败:', err))
       .finally(() => setLoading(false))
@@ -888,8 +1441,21 @@ function BillManagement() {
     loadYearlyData(year)
   }
 
+  const [billDetails, setBillDetails] = useState({})
+
   const showBillDetail = (bill) => {
-    setSelectedBill(selectedBill && selectedBill.account_id === bill.account_id ? null : bill)
+    if (selectedBill && selectedBill.account_id === bill.account_id) {
+      setSelectedBill(null)
+      return
+    }
+    setSelectedBill(bill)
+    // 如果还没有加载过该账号的明细，则从 API 加载
+    const cacheKey = `${bill.account_id}_${bill.billing_cycle}`
+    if (!billDetails[cacheKey]) {
+      axios.get('/api/bills/details', { params: { account_id: bill.account_id, billing_cycle: bill.billing_cycle } })
+        .then(res => setBillDetails(prev => ({ ...prev, [cacheKey]: res.data.details || [] })))
+        .catch(() => setBillDetails(prev => ({ ...prev, [cacheKey]: [] })))
+    }
   }
 
   const handleYearlySort = (key) => {
@@ -917,33 +1483,33 @@ function BillManagement() {
   }
 
   // 环比渲染
-  const renderComparison = (current, prev) => {
+  const renderComparison = (current, prev, sym = '¥') => {
     if (!prev || prev === 0) {
-      if (current > 0) return <span style={{ color: '#ef4444', whiteSpace: 'nowrap', fontWeight: 600 }}>↑ ¥{fmtMoney(current)} (新增)</span>
+      if (current > 0) return <span style={{ color: '#ef4444', whiteSpace: 'nowrap', fontWeight: 600 }}>↑ {sym}{fmtMoney(current)} (新增)</span>
       return <span style={{ color: '#94a3b8', fontWeight: 600 }}>-</span>
     }
     const diff = current - prev
     const pct = ((diff / prev) * 100).toFixed(1)
     if (diff > 0) {
-      return <span style={{ color: '#ef4444', whiteSpace: 'nowrap', fontWeight: 600 }}>↑ ¥{fmtMoney(diff)} (+{pct}%)</span>
+      return <span style={{ color: '#ef4444', whiteSpace: 'nowrap', fontWeight: 600 }}>↑ {sym}{fmtMoney(diff)} (+{pct}%)</span>
     } else if (diff < 0) {
-      return <span style={{ color: '#10b981', whiteSpace: 'nowrap', fontWeight: 600 }}>↓ ¥{fmtMoney(Math.abs(diff))} ({pct}%)</span>
+      return <span style={{ color: '#10b981', whiteSpace: 'nowrap', fontWeight: 600 }}>↓ {sym}{fmtMoney(Math.abs(diff))} ({pct}%)</span>
     }
     return <span style={{ color: '#94a3b8', fontWeight: 600 }}>— 持平</span>
   }
 
   // 明细环比渲染
-  const renderDetailComparison = (current, prev) => {
+  const renderDetailComparison = (current, prev, sym = '¥') => {
     if (!prev || prev === 0) {
-      if (current > 0) return <span style={{ color: '#ef4444', whiteSpace: 'nowrap' }}>↑ ¥{fmtMoney(current)} (新增)</span>
+      if (current > 0) return <span style={{ color: '#ef4444', whiteSpace: 'nowrap' }}>↑ {sym}{fmtMoney(current)} (新增)</span>
       return <span style={{ color: '#94a3b8' }}>-</span>
     }
     const diff = current - prev
     const pct = ((diff / prev) * 100).toFixed(1)
     if (diff > 0) {
-      return <span style={{ color: '#ef4444', whiteSpace: 'nowrap' }}>↑ ¥{fmtMoney(diff)} (+{pct}%)</span>
+      return <span style={{ color: '#ef4444', whiteSpace: 'nowrap' }}>↑ {sym}{fmtMoney(diff)} (+{pct}%)</span>
     } else if (diff < 0) {
-      return <span style={{ color: '#10b981', whiteSpace: 'nowrap' }}>↓ ¥{fmtMoney(Math.abs(diff))} ({pct}%)</span>
+      return <span style={{ color: '#10b981', whiteSpace: 'nowrap' }}>↓ {sym}{fmtMoney(Math.abs(diff))} ({pct}%)</span>
     }
     return <span style={{ color: '#94a3b8' }}>— 持平</span>
   }
@@ -982,6 +1548,17 @@ function BillManagement() {
           <button className="btn-primary" onClick={() => loadData()} disabled={loading}>
             {loading ? '查询中..' : '查询'}
           </button>
+          <button className="btn-default" onClick={() => syncHistoryBills()} disabled={historySyncing}>
+            {historySyncing ? '同步中...' : '同步历史账单'}
+          </button>
+          <label style={{ marginLeft: '12px' }}>从：</label>
+          <input
+            type="month"
+            value={historyStartMonth}
+            onChange={e => setHistoryStartMonth(e.target.value)}
+            style={{ width: 'auto' }}
+          />
+          <span style={{ color: '#64748b', fontSize: 13 }}>开始同步</span>
         </div>
         {availableCycles.length > 0 && (
           <div className="cycle-chips">
@@ -998,18 +1575,26 @@ function BillManagement() {
         )}
       </div>
 
-      {/* 汇总?*/}
-      <div className="summary-cards">
+      {/* 汇总卡片 */}
+      <div className="summary-cards" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
         <div className="summary-card highlight">
-          <div className="card-label">{billingCycle} 所有账号消费总额</div>
+          <div className="card-label">{billingCycle} 消费总额</div>
           <div className="card-value">¥{fmtMoney(totalAmount)}</div>
           <div className="card-trend">环比上月 {renderComparison(totalAmount, prevMonthData.total)}</div>
+        </div>
+        <div className="summary-card highlight">
+          <div className="card-label">{billingCycle} 已还款总额</div>
+          <div className="card-value" style={{ color: '#10b981' }}>¥{fmtMoney(totalPaid)}</div>
+        </div>
+        <div className="summary-card highlight">
+          <div className="card-label">{billingCycle} 待还款总额</div>
+          <div className="card-value" style={{ color: '#10b981' }}>¥{fmtMoney(totalUnpaid)}</div>
         </div>
       </div>
 
       {/* 各账号账单*/}
       <div className="section-block">
-        <h3>{billingCycle} 各账号账单</h3>
+        <h3 style={{ fontWeight: 500 }}>各账号账单</h3>
         {bills.length === 0 ? (
           <div className="empty-state">暂无账单数据，请先同步数据</div>
         ) : (
@@ -1021,6 +1606,8 @@ function BillManagement() {
                   <th>账单月份</th>
                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleBillsSort('total_amount')}>消费总额{sortArrowFor(billsSort, 'total_amount')}</th>
                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleBillsSort('trend')}>环比上月{sortArrowFor(billsSort, 'trend')}</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleBillsSort('paid_amount')}>已还款金额{sortArrowFor(billsSort, 'paid_amount')}</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleBillsSort('unpaid_amount')}>待还款金额{sortArrowFor(billsSort, 'unpaid_amount')}</th>
                   <th>更新时间</th>
                   <th>操作</th>
                 </tr>
@@ -1032,13 +1619,19 @@ function BillManagement() {
                     ...bill,
                     trend: bill.total_amount - (prevMonthData.accounts[bill.account_id] || 0)
                   }))
-                  return getSorted(billsWithTrend, billsSort).map(bill => (
+                  return getSorted(billsWithTrend, billsSort).map(bill => {
+                    const sym = bill.currency === 'SGD' ? 'SGD ' : '¥'
+                    const isPaidOff = (bill.unpaid_amount || 0) === 0
+                    const amountColor = isPaidOff ? '#10b981' : 'inherit'
+                    return (
                   <Fragment key={bill.account_id}>
                     <tr>
                       <td>{bill.account_name}</td>
                       <td>{bill.billing_cycle}</td>
-                      <td className="td-amount">¥{fmtMoney(bill.total_amount)}</td>
-                      <td>{renderComparison(bill.total_amount, prevMonthData.accounts[bill.account_id])}</td>
+                      <td className="td-amount" style={{ color: amountColor }}>{sym}{fmtMoney(bill.total_amount)}</td>
+                      <td>{renderComparison(bill.total_amount, prevMonthData.accounts[bill.account_id], sym)}</td>
+                      <td className="td-amount" style={{ color: amountColor }}>{sym}{fmtMoney(bill.paid_amount || 0)}</td>
+                      <td className="td-amount" style={{ color: amountColor }}>{sym}{fmtMoney(bill.unpaid_amount || 0)}</td>
                       <td>{fmtDate(bill.updated_at)}</td>
                       <td>
                         <button className="btn-link" onClick={() => showBillDetail(bill)}>
@@ -1046,10 +1639,14 @@ function BillManagement() {
                         </button>
                       </td>
                     </tr>
-                    {selectedBill && selectedBill.account_id === bill.account_id && bill.details && bill.details.length > 0 && (() => {
+                    {selectedBill && selectedBill.account_id === bill.account_id && (() => {
+                      const cacheKey = `${bill.account_id}_${bill.billing_cycle}`
+                      const details = billDetails[cacheKey]
+                      if (!details) return <tr key={`detail-${bill.account_id}`}><td colSpan="7" style={{ textAlign: 'center', padding: '20px', color: '#94a3b8' }}>加载中...</td></tr>
+                      if (details.length === 0) return null
                       // 按产品类型+产品明细合并
                       const merged = {}
-                      bill.details.forEach(d => {
+                      details.forEach(d => {
                         const code = d.product_code || d.product_type || 'other'
                         const detail = d.product_detail || d.product_type || '-'
                         const key = `${code}__${detail}`
@@ -1057,12 +1654,12 @@ function BillManagement() {
                           merged[key] = {
                             product_code: d.product_code || '-',
                             product_detail: detail,
-                            pretax_amount: 0,
+                            after_tax_amount: 0,
                             cash_amount: 0,
                             deduct_amount: 0,
                           }
                         }
-                        merged[key].pretax_amount += parseFloat(d.pretax_amount || 0)
+                        merged[key].after_tax_amount += parseFloat(d.after_tax_amount || d.pretax_amount || 0)
                         merged[key].cash_amount += parseFloat(d.cash_amount || 0)
                         merged[key].deduct_amount += parseFloat(d.deduct_amount || 0)
                       })
@@ -1070,13 +1667,13 @@ function BillManagement() {
                       // 获取上月该账号的明细
                       const prevDetails = prevMonthData.accountDetails[bill.account_id] || {}
                       // 过滤0金额
-                      const displayList = hideZeroBills ? mergedList.filter(d => d.pretax_amount !== 0) : mergedList
+                      const displayList = hideZeroBills ? mergedList.filter(d => d.after_tax_amount !== 0) : mergedList
                       return (
                       <tr key={`detail-${bill.account_id}`}>
                         <td colSpan="7" style={{ padding: 0 }}>
                           <div className="bill-detail-panel">
-                            <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px', borderBottom: '1px solid #e5e7eb', fontSize: '13px' }}>
-                              <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', color: '#6b7280' }}>
+                            <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px', borderBottom: '1px solid #e2e8f0', fontSize: 13 }}>
+                              <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', color: '#64748b' }}>
                                 <input type="checkbox" checked={hideZeroBills} onChange={e => setHideZeroBills(e.target.checked)} style={{ cursor: 'pointer' }} />
                                 隐藏0金额项
                               </label>
@@ -1087,7 +1684,7 @@ function BillManagement() {
                                 <tr>
                                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('product_code')}>产品类型{sortArrowFor(detailSort, 'product_code')}</th>
                                   <th>产品明细</th>
-                                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('pretax_amount')}>应付金额{sortArrowFor(detailSort, 'pretax_amount')}</th>
+                                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('after_tax_amount')}>应付金额{sortArrowFor(detailSort, 'after_tax_amount')}</th>
                                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('trend')}>环比上月{sortArrowFor(detailSort, 'trend')}</th>
                                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('cash_amount')}>现金支付额{sortArrowFor(detailSort, 'cash_amount')}</th>
                                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('deduct_amount')}>代金券抵扣{sortArrowFor(detailSort, 'deduct_amount')}</th>
@@ -1103,23 +1700,23 @@ function BillManagement() {
                                     const detail = d.product_detail || '-'
                                     const key = `${code}__${detail}`
                                     const prevItem = prevDetails[key]
-                                    const prevAmount = prevItem ? prevItem.pretax_amount : 0
-                                    return { ...d, trend: d.pretax_amount - prevAmount }
+                                    const prevAmount = prevItem ? (prevItem.after_tax_amount || prevItem.pretax_amount) : 0
+                                    return { ...d, trend: d.after_tax_amount - prevAmount }
                                   })
                                   return getSorted(listWithTrend, detailSort).map((d, i) => {
                                     const code = d.product_code || '-'
                                     const detail = d.product_detail || '-'
                                     const key = `${code}__${detail}`
                                     const prevItem = prevDetails[key]
-                                    const prevAmount = prevItem ? prevItem.pretax_amount : 0
+                                    const prevAmount = prevItem ? (prevItem.after_tax_amount || prevItem.pretax_amount) : 0
                                     return (
                                     <tr key={i}>
-                                      <td style={{ fontSize: '14px' }}>{d.product_code}</td>
-                                      <td style={{ fontSize: '14px' }}>{d.product_detail}</td>
-                                      <td className="td-amount">¥{fmtMoney(d.pretax_amount)}</td>
-                                      <td>{renderDetailComparison(d.pretax_amount, prevAmount)}</td>
-                                      <td className="td-amount">¥{fmtMoney(d.cash_amount)}</td>
-                                      <td className="td-amount">¥{fmtMoney(d.deduct_amount)}</td>
+                                      <td style={{ fontSize: 14 }}>{d.product_code}</td>
+                                      <td style={{ fontSize: 14 }}>{d.product_detail}</td>
+                                      <td className="td-amount">{sym}{fmtMoney(d.after_tax_amount)}</td>
+                                      <td>{renderDetailComparison(d.after_tax_amount, prevAmount, sym)}</td>
+                                      <td className="td-amount">{sym}{fmtMoney(d.cash_amount)}</td>
+                                      <td className="td-amount">{sym}{fmtMoney(d.deduct_amount)}</td>
                                     </tr>
                                     )
                                   })
@@ -1132,7 +1729,8 @@ function BillManagement() {
                       )
                     })()}
                   </Fragment>
-                ))
+                    )
+                  })
                 })()}
               </tbody>
             </table>
@@ -1162,10 +1760,18 @@ function BillManagement() {
         )}
       </div>
 
-      <div className="summary-cards">
+      <div className="summary-cards" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
         <div className="summary-card highlight">
           <div className="card-label">{yearlyYear}年消费总额</div>
           <div className="card-value">¥{fmtMoney(yearlyData.total_yearly)}</div>
+        </div>
+        <div className="summary-card highlight">
+          <div className="card-label">{yearlyYear}年已还款总额</div>
+          <div className="card-value" style={{ color: '#10b981' }}>¥{fmtMoney(yearlyData.total_yearly_paid || 0)}</div>
+        </div>
+        <div className="summary-card highlight">
+          <div className="card-label">{yearlyYear}年待还款总额</div>
+          <div className="card-value" style={{ color: '#10b981' }}>¥{fmtMoney(yearlyData.total_yearly_unpaid || 0)}</div>
         </div>
       </div>
 
@@ -1224,17 +1830,26 @@ function BillManagement() {
                 <tr>
                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleYearlySort('account_name')}>账号名称{sortArrowFor(yearlySort, 'account_name')}</th>
                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleYearlySort('yearly_amount')}>年消费总额{sortArrowFor(yearlySort, 'yearly_amount')}</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleYearlySort('yearly_paid')}>已还款金额{sortArrowFor(yearlySort, 'yearly_paid')}</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleYearlySort('yearly_unpaid')}>待还款金额{sortArrowFor(yearlySort, 'yearly_unpaid')}</th>
                   <th style={{ cursor: 'pointer', userSelect: 'none' }} className="td-center" onClick={() => handleYearlySort('months_count')}>账单月数{sortArrowFor(yearlySort, 'months_count')}</th>
                 </tr>
               </thead>
               <tbody>
-                {getSorted(yearlyData.yearly_bills, yearlySort).map(bill => (
+                {getSorted(yearlyData.yearly_bills, yearlySort).map(bill => {
+                  const sym = bill.currency === 'SGD' ? 'SGD ' : '¥'
+                  const isPaidOff = (bill.yearly_unpaid || 0) === 0
+                  const amountColor = isPaidOff ? '#10b981' : 'inherit'
+                  return (
                   <tr key={bill.account_id}>
                     <td>{bill.account_name}</td>
-                    <td className="td-amount">¥{fmtMoney(bill.yearly_amount)}</td>
+                    <td className="td-amount" style={{ color: amountColor }}>{sym}{fmtMoney(bill.yearly_amount)}</td>
+                    <td className="td-amount" style={{ color: amountColor }}>{sym}{fmtMoney(bill.yearly_paid || 0)}</td>
+                    <td className="td-amount" style={{ color: amountColor }}>{sym}{fmtMoney(bill.yearly_unpaid || 0)}</td>
                     <td className="td-center">{bill.months_count}个月</td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -1242,6 +1857,13 @@ function BillManagement() {
       )}
       </>
       )}
+      {/* 颜色说明 */}
+      <div style={{ marginTop: 16, padding: '10px 16px', background: '#f8fafc', borderRadius: 8, fontSize: 13, color: '#64748b', display: 'flex', gap: 24, alignItems: 'center' }}>
+        <span>金额颜色说明：</span>
+        <span><span style={{ color: '#10b981', fontWeight: 500 }}>绿色</span> = 待还款为0，已全部还清</span>
+        <span><span style={{ color: '#0f172a', fontWeight: 500 }}>黑色</span> = 仍有待还款金额</span>
+      </div>
+      {confirmState && <ConfirmModal message={confirmState.msg} onConfirm={confirmState.onConfirm} onCancel={confirmState.onCancel} />}
     </div>
   )
 }
@@ -1256,11 +1878,11 @@ function AccountManagement() {
     try {
       const saved = localStorage.getItem('syncingIds')
       return saved ? JSON.parse(saved) : {}
-    } catch { return {} }
+    } catch (err) { return {} }
   })
   const [showForm, setShowForm] = useState(false)
   const [editingAccount, setEditingAccount] = useState(null)
-  const [formData, setFormData] = useState({ name: '', access_key_id: '', access_key_secret: '', remark: '', balance_threshold: 20000 })
+  const [formData, setFormData] = useState({ name: '', access_key_id: '', access_key_secret: '', remark: '', balance_threshold: 20000, currency: 'CNY' })
   // 账号表格排序
   const [acctSortKey, setAcctSortKey] = useState('')
   const [acctSortDir, setAcctSortDir] = useState('asc')
@@ -1377,7 +1999,7 @@ function AccountManagement() {
           }
         })
       }
-    } catch { /* ignore */ }
+    } catch (err) { /* ignore */ }
   }, [])
 
   const loadAutoSync = useCallback(() => {
@@ -1417,13 +2039,13 @@ function AccountManagement() {
   }
 
   const handleAddAccount = () => {
-    setFormData({ name: '', access_key_id: '', access_key_secret: '', remark: '', balance_threshold: 20000 })
+    setFormData({ name: '', access_key_id: '', access_key_secret: '', remark: '', balance_threshold: 20000, currency: 'CNY' })
     setEditingAccount(null)
     setShowForm(true)
   }
 
   const handleEditAccount = (account) => {
-    setFormData({ name: account.name, access_key_id: account.access_key_id, access_key_secret: '', remark: account.remark || '', balance_threshold: account.balance_threshold ?? 20000 })
+    setFormData({ name: account.name, access_key_id: account.access_key_id, access_key_secret: '', remark: account.remark || '', balance_threshold: account.balance_threshold ?? 20000, currency: account.currency || 'CNY' })
     setEditingAccount(account)
     setShowForm(true)
   }
@@ -1711,8 +2333,15 @@ function AccountManagement() {
                 <input type="text" value={formData.remark} onChange={e => setFormData(prev => ({ ...prev, remark: e.target.value }))} placeholder="备注信息" />
               </div>
               <div className="form-item">
-                <label>余额预警阈值（元）</label>
+                <label>余额预警阈值</label>
                 <input type="number" value={formData.balance_threshold} onChange={e => setFormData(prev => ({ ...prev, balance_threshold: e.target.value === '' ? '' : Number(e.target.value) }))} placeholder="默认 20000" min="0" />
+              </div>
+              <div className="form-item">
+                <label>币种</label>
+                <select value={formData.currency} onChange={e => setFormData(prev => ({ ...prev, currency: e.target.value }))}>
+                  <option value="CNY">人民币（¥）</option>
+                  <option value="SGD">新加坡元（SGD）</option>
+                </select>
               </div>
             </div>
             <div className="form-actions">
@@ -1735,6 +2364,7 @@ function AccountManagement() {
                     { key: 'access_key_id', label: 'AccessKey ID' },
                     { key: 'remark', label: '备注' },
                     { key: 'balance_threshold', label: '预警阈值' },
+                    { key: 'currency', label: '币种' },
                     { key: 'last_sync_at', label: '上次同步' },
                   ].map(col => (
                     <th
@@ -1768,7 +2398,8 @@ function AccountManagement() {
                     <td className="td-mono">{acct.aliyun_account_id || '-'}</td>
                     <td className="td-mono">{acct.access_key_id}</td>
                     <td>{acct.remark || '-'}</td>
-                    <td>¥{fmtMoney(acct.balance_threshold ?? 20000)}</td>
+                    <td>{(acct.currency || 'CNY') === 'SGD' ? 'SGD ' : '¥'}{fmtMoney(acct.balance_threshold ?? 20000)}</td>
+                    <td>{(acct.currency || 'CNY') === 'SGD' ? '新加坡元' : '人民币'}</td>
                     <td>{acct.last_sync_at ? fmtDate(acct.last_sync_at) : '从未同步'}</td>
                     <td className="td-actions">
                       <button className="btn-link" onClick={() => handleSync(acct.id, 'all')} disabled={syncingIds[acct.id]}>
@@ -2130,7 +2761,7 @@ function RamManagement() {
         </div>
       )}
       <div className="page-header">
-        <h2>RAM 用户管理</h2>
+        <h2>RAM管理</h2>
       </div>
 
       {/* 搜索框*/}
@@ -2904,8 +3535,7 @@ function SslManagement() {
   const [selectedAccount, setSelectedAccount] = useState('')
   const [certs, setCerts] = useState([])
   const [loading, setLoading] = useState(false)
-  const [sortKey, setSortKey] = useState('end_date')
-  const [sortDir, setSortDir] = useState('asc')
+  const { sortKey, sortDir, setSortKey, setSortDir, handleSort, sortArrow, sortData } = useSortable('end_date')
   const [certKeyword, setCertKeyword] = useState('')
 
   useEffect(() => {
@@ -2997,20 +3627,6 @@ function SslManagement() {
   ]
 
   const visibleColumns = sslColumns.filter(c => c.showOnly !== 'all' || selectedAccount === 'all')
-
-  const handleSort = (key) => {
-    if (sortKey === key) {
-      setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
-    } else {
-      setSortKey(key)
-      setSortDir('asc')
-    }
-  }
-
-  const sortArrow = (key) => {
-    if (sortKey !== key) return ' ↕'
-    return sortDir === 'asc' ? ' ↑' : ' ↓'
-  }
 
   const sortedCerts = (() => {
     // 先按关键词过滤
@@ -3475,7 +4091,7 @@ function CloudMonitor() {
         const vals = Object.values(obj)
         return vals.length > 0 ? String(vals[0]) : res
       }
-    } catch {}
+    } catch (err) {}
     return res
   }
 
@@ -3623,8 +4239,7 @@ function NetworkManagement() {
   const [regions, setRegions] = useState([])
   const [data, setData] = useState([])
   const [loading, setLoading] = useState(false)
-  const [sortKey, setSortKey] = useState('')
-  const [sortDir, setSortDir] = useState('asc')
+  const { sortKey, sortDir, setSortKey, handleSort, sortArrow, sortData } = useSortable()
 
   const tabs = [
     { key: 'vpc', label: 'VPC' },
@@ -3635,40 +4250,40 @@ function NetworkManagement() {
 
   const tabColumns = {
     vpc: [
-      { key: 'account_name', label: '账号', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span> },
+      { key: 'account_name', label: '账号', sortable: true, render: nowrap },
       { key: 'instance_id', label: 'VPC ID', sortable: true },
       { key: 'vpc_name', label: '名称', sortable: true },
       { key: 'cidr_block', label: '网段', sortable: true },
-      { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
+      { key: 'region_id', label: '区域', sortable: true, render: renderRegion },
       { key: 'created_time', label: '创建时间', sortable: true, render: v => fmtDate(v) },
     ],
     vswitch: [
-      { key: 'account_name', label: '账号', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span> },
+      { key: 'account_name', label: '账号', sortable: true, render: nowrap },
       { key: 'instance_id', label: '交换机ID', sortable: true },
       { key: 'vswitch_name', label: '名称', sortable: true },
       { key: 'vpc_id', label: 'VPC ID', sortable: true },
       { key: 'cidr_block', label: '网段', sortable: true },
       { key: 'zone_id', label: '可用区', sortable: true, render: v => { if (!v) return '-'; const parts = v.split('-'); const zone = parts[parts.length - 1]; return `可用区${zone.toUpperCase()}` } },
       { key: 'available_ip_count', label: '可用IPv4地址数', sortable: true, render: v => v ?? 0 },
-      { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
+      { key: 'region_id', label: '区域', sortable: true, render: renderRegion },
     ],
     eip: [
-      { key: 'account_name', label: '账号', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span> },
+      { key: 'account_name', label: '账号', sortable: true, render: nowrap },
       { key: 'instance_id', label: '分配ID', sortable: true },
       { key: 'ip_address', label: 'IP地址', sortable: true, className: 'td-mono' },
       { key: 'name', label: '名称', sortable: true },
       { key: 'status', label: '状态', sortable: true, render: v => <span className={`status-tag status-${v}`}>{STATUS_LABELS[v] || v}</span> },
       { key: 'bandwidth', label: '带宽', sortable: true, render: v => v ? `${v}Mbps` : '-' },
       { key: 'charge_type', label: '计费方式', sortable: true, render: v => ({ PayByTraffic: '按流量', PayByBandwidth: '按带宽' }[v] || v) },
-      { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
+      { key: 'region_id', label: '区域', sortable: true, render: renderRegion },
     ],
     nat: [
-      { key: 'account_name', label: '账号', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span> },
+      { key: 'account_name', label: '账号', sortable: true, render: nowrap },
       { key: 'instance_id', label: '网关ID', sortable: true },
       { key: 'name', label: '名称', sortable: true },
       { key: 'spec', label: '规格', sortable: true, render: v => ({ Small: '小型', Middle: '中型', Large: '大型' }[v] || v) },
       { key: 'vpc_id', label: 'VPC ID', sortable: true },
-      { key: 'region_id', label: '区域', sortable: true, render: v => <span style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[v] || v}</span> },
+      { key: 'region_id', label: '区域', sortable: true, render: renderRegion },
       { key: 'created_time', label: '创建时间', sortable: true, render: v => fmtDate(v) },
     ],
   }
@@ -3710,27 +4325,7 @@ function NetworkManagement() {
 
   const handleSearch = () => { setSearchKeyword(keyword) }
 
-  // 排序
-  const handleSort = (key) => {
-    if (sortKey === key) {
-      setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
-    } else {
-      setSortKey(key)
-      setSortDir('asc')
-    }
-  }
-
-  const sortedData = [...data].sort((a, b) => {
-    if (!sortKey) return 0
-    let va = a[sortKey] ?? '', vb = b[sortKey] ?? ''
-    if (typeof va === 'number' && typeof vb === 'number') return sortDir === 'asc' ? va - vb : vb - va
-    return sortDir === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va))
-  })
-
-  const sortArrow = (key) => {
-    if (sortKey !== key) return ' ↕'
-    return sortDir === 'asc' ? ' ↑' : ' ↓'
-  }
+  const sortedData = sortData(data)
 
   const columns = tabColumns[activeTab] || []
 
@@ -3807,8 +4402,7 @@ function SecurityEvents() {
   const [loading, setLoading] = useState(false)
   const [daysFilter, setDaysFilter] = useState('7')
   const [levelFilter, setLevelFilter] = useState('')
-  const [sortKey, setSortKey] = useState('')
-  const [sortDir, setSortDir] = useState('desc')
+  const { sortKey, sortDir, handleSort, sortArrow, sortData } = useSortable('', 'desc')
 
   const levelLabels = {
     serious: '紧急',
@@ -3851,26 +4445,7 @@ function SecurityEvents() {
 
   useEffect(() => { loadEvents() }, [loadEvents])
 
-  const handleSort = (key) => {
-    if (sortKey === key) {
-      setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
-    } else {
-      setSortKey(key)
-      setSortDir('asc')
-    }
-  }
-
-  const sortedEvents = [...events].sort((a, b) => {
-    if (!sortKey) return 0
-    let va = a[sortKey] ?? '', vb = b[sortKey] ?? ''
-    if (typeof va === 'number' && typeof vb === 'number') return sortDir === 'asc' ? va - vb : vb - va
-    return sortDir === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va))
-  })
-
-  const sortArrow = (key) => {
-    if (sortKey !== key) return ' ↕'
-    return sortDir === 'asc' ? ' ↑' : ' ↓'
-  }
+  const sortedEvents = sortData(events)
 
   return (
     <div className="page-content">
@@ -3932,7 +4507,7 @@ function SecurityEvents() {
                       display: 'inline-block',
                       padding: '2px 10px',
                       borderRadius: '12px',
-                      fontSize: '12px',
+                      fontSize: 12,
                       fontWeight: 600,
                       color: '#fff',
                       background: levelColors[e.level] || '#94a3b8',
@@ -4125,6 +4700,7 @@ const PAGE_LABELS = {
   overview: '资源概览',
   resources: '资源管理',
   network: '网络管理',
+  publicip: '公网大全',
   bills: '账单管理',
   accounts: '平台设置',
   ram: 'RAM 管理',
@@ -4158,6 +4734,7 @@ function App() {
       case 'overview': return <ResourceOverview />
       case 'resources': return <ResourceManagement />
       case 'network': return <NetworkManagement />
+      case 'publicip': return <PublicIPManagement />
       case 'bills': return <BillManagement />
       case 'accounts': return <AccountManagement />
       case 'ram': return <RamManagement />

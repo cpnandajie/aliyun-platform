@@ -84,6 +84,15 @@ os.makedirs(BACKUP_DIR, exist_ok=True)
 # 同步任务状态跟踪（内存字典，key=task_id）
 sync_tasks = {}
 sync_tasks_lock = threading.Lock()
+# 每个账号的同步锁，防止同一账号并发同步
+_account_sync_locks = {}
+_account_sync_locks_guard = threading.Lock()
+
+def _get_account_sync_lock(account_id):
+    with _account_sync_locks_guard:
+        if account_id not in _account_sync_locks:
+            _account_sync_locks[account_id] = threading.Lock()
+        return _account_sync_locks[account_id]
 # 默认的阿里云区域
 DEFAULT_REGIONS = [
     'cn-hangzhou', 'cn-shanghai', 'cn-beijing', 'cn-chengdu',
@@ -285,6 +294,12 @@ def init_db():
             FOREIGN KEY (account_id) REFERENCES accounts(id)
         )
     ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_monthly_bills_cycle ON monthly_bills(billing_cycle)')
+    # 添加 details_summary 列（如果不存在）用于存储预计算的明细汇总
+    try:
+        cursor.execute('ALTER TABLE monthly_bills ADD COLUMN details_summary TEXT')
+    except Exception:
+        pass  # 列已存在
     # 账号余额表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS account_balance (
@@ -326,6 +341,21 @@ def init_db():
     ''')
     # 插入默认配置
     cursor.execute('INSERT OR IGNORE INTO auto_sync_config (id, enabled, interval_hours) VALUES (1, 0, 6)')
+    conn.commit()
+    conn.close()
+    # 创建来源名称配置表
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS source_labels (
+            source TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            sort_order INTEGER DEFAULT 0
+        )
+    ''')
+    cursor.execute("INSERT OR IGNORE INTO source_labels (source, label, sort_order) VALUES ('huawei', '华为云', 1)")
+    cursor.execute("INSERT OR IGNORE INTO source_labels (source, label, sort_order) VALUES ('idc', 'IDC', 2)")
+    cursor.execute("INSERT OR IGNORE INTO source_labels (source, label, sort_order) VALUES ('office', '居然大厦', 3)")
     conn.commit()
     conn.close()
     # 创建默认区域表
@@ -489,6 +519,26 @@ def init_db():
         columns = [col[1] for col in cursor.fetchall()]
         if 'balance_threshold' not in columns:
             cursor.execute('ALTER TABLE accounts ADD COLUMN balance_threshold REAL DEFAULT 20000')
+        if 'currency' not in columns:
+            cursor.execute("ALTER TABLE accounts ADD COLUMN currency TEXT DEFAULT 'CNY'")
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    # 创建手动公网IP表
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS public_ips (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                ip_address TEXT NOT NULL,
+                remark TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
         conn.commit()
         conn.close()
     except Exception:
@@ -559,35 +609,89 @@ def get_account_name(account_id):
         return ''
 
 
+def get_account_currency(account_id):
+    """获取账号币种"""
+    try:
+        row = query_db('SELECT currency FROM accounts WHERE id = ?', (account_id,), one=True)
+        return (row['currency'] if row else 'CNY') or 'CNY'
+    except Exception:
+        return 'CNY'
+
+
+def get_api_endpoint(service, account_id):
+    """根据账号币种返回正确的API端点
+    国际站(SGD)使用 business.alibabacloud.com 格式
+    国内站(CNY)使用 business.aliyuncs.com 格式
+    """
+    currency = get_account_currency(account_id)
+    if currency == 'SGD':
+        # 国际站端点
+        endpoints = {
+            'ecs': 'ecs.ap-southeast-1.aliyuncs.com',
+            'rds': 'rds.ap-southeast-1.aliyuncs.com',
+            'slb': 'slb.ap-southeast-1.aliyuncs.com',
+            'oss': 'oss-ap-southeast-1.aliyuncs.com',
+            'redis': 'r-kvstore.ap-southeast-1.aliyuncs.com',
+            'vpc': 'vpc.ap-southeast-1.aliyuncs.com',
+            'eip': 'vpc.ap-southeast-1.aliyuncs.com',
+            'nat': 'vpc.ap-southeast-1.aliyuncs.com',
+            'bss': 'business.ap-southeast-1.aliyuncs.com',
+            'sts': 'sts.ap-southeast-1.aliyuncs.com',
+            'ram': 'ram.alibabacloud.com',
+            'cms': 'metrics.ap-southeast-1.aliyuncs.com',
+        }
+    else:
+        # 国内站端点
+        endpoints = {
+            'ecs': 'ecs.aliyuncs.com',
+            'rds': 'rds.aliyuncs.com',
+            'slb': 'slb.aliyuncs.com',
+            'oss': 'oss-cn-hangzhou.aliyuncs.com',
+            'redis': 'r-kvstore.aliyuncs.com',
+            'vpc': 'vpc.aliyuncs.com',
+            'eip': 'vpc.aliyuncs.com',
+            'nat': 'vpc.aliyuncs.com',
+            'bss': 'business.aliyuncs.com',
+            'sts': 'sts.aliyuncs.com',
+            'ram': 'ram.aliyuncs.com',
+            'cms': 'metrics.aliyuncs.com',
+        }
+    return endpoints.get(service, f'{service}.aliyuncs.com')
+
+
 def get_aliyun_account_info(access_key_id, access_key_secret):
     """获取阿里云账号ID和名称，优先STS，备选RAM，返回 (account_id, account_name, source, message)"""
-    # 方法1：通过STS GetCallerIdentity
+    # 方法1：通过STS GetCallerIdentity（尝试国内+国际端点）
     try:
         from alibabacloud_sts20150401.client import Client as StsClient
         from alibabacloud_tea_openapi import models as open_api_models
-        
-        config = open_api_models.Config(
-            access_key_id=access_key_id,
-            access_key_secret=access_key_secret
-        )
-        config.endpoint = 'sts.aliyuncs.com'
-        client = StsClient(config)
-        
-        # GetCallerIdentity 无参数，尝试无参调用
-        try:
-            resp = client.get_caller_identity()
-        except TypeError:
-            # 旧版本 SDK 需要 request 对象
-            from alibabacloud_sts20150401 import models as sts_models
-            req = sts_models.GetCallerIdentityRequest()
-            resp = client.get_caller_identity(req)
-        
-        if resp.body and resp.body.account_id:
-            account_id = str(resp.body.account_id)
-            # 尝试获取账号名称（如果响应中有）
-            account_name = getattr(resp.body, 'account_name', '') or ''
-            return account_id, account_name, 'sts', 'success'
-        return None, None, 'sts', 'response no account_id'
+
+        # 尝试多个STS端点
+        sts_endpoints = ['sts.aliyuncs.com', 'sts.ap-southeast-1.aliyuncs.com']
+        for sts_ep in sts_endpoints:
+            try:
+                config = open_api_models.Config(
+                    access_key_id=access_key_id,
+                    access_key_secret=access_key_secret
+                )
+                config.endpoint = sts_ep
+                client = StsClient(config)
+
+                try:
+                    resp = client.get_caller_identity()
+                except TypeError:
+                    from alibabacloud_sts20150401 import models as sts_models
+                    req = sts_models.GetCallerIdentityRequest()
+                    resp = client.get_caller_identity(req)
+
+                if resp.body and resp.body.account_id:
+                    account_id = str(resp.body.account_id)
+                    account_name = getattr(resp.body, 'account_name', '') or ''
+                    return account_id, account_name, 'sts', f'success via {sts_ep}'
+            except Exception as e:
+                app.logger.warning(f"STS端点 {sts_ep} 失败: {str(e)}")
+                continue
+        return None, None, 'sts', 'all STS endpoints failed'
     except ImportError as e:
         app.logger.warning(f"STS SDK未安装: {str(e)}，尝试RAM方式")
     except Exception as e:
@@ -665,7 +769,7 @@ def sync_ecs(account_id, access_key_id, access_key_secret):
                     access_key_id=access_key_id,
                     access_key_secret=access_key_secret
                 )
-                config.endpoint = 'ecs.aliyuncs.com'
+                config.endpoint = get_api_endpoint('ecs', account_id)
                 client = EcsClient(config)
 
                 page_number = 1
@@ -757,7 +861,7 @@ def sync_rds(account_id, access_key_id, access_key_secret):
                     access_key_id=access_key_id,
                     access_key_secret=access_key_secret
                 )
-                config.endpoint = 'rds.aliyuncs.com'
+                config.endpoint = get_api_endpoint('rds', account_id)
                 client = RdsClient(config)
                 # 兼容不同SDK版本的方法名
                 describe_method = getattr(client, 'describe_db_instances', None) or getattr(client, 'describe_dbinstances', None)
@@ -858,7 +962,7 @@ def sync_slb(account_id, access_key_id, access_key_secret):
                     access_key_id=access_key_id,
                     access_key_secret=access_key_secret
                 )
-                config.endpoint = 'slb.aliyuncs.com'
+                config.endpoint = get_api_endpoint('slb', account_id)
                 client = SlbClient(config)
 
                 page_number = 1
@@ -874,7 +978,7 @@ def sync_slb(account_id, access_key_id, access_key_secret):
 
                     for inst in instances:
                         execute_db('''
-                            INSERT OR REPLACE INTO slb_instances
+                            INSERT INTO slb_instances
                             (account_id, instance_id, instance_name, address, address_type,
                              status, network_type, region_id, created_time, updated_at)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -917,7 +1021,7 @@ def sync_oss(account_id, access_key_id, access_key_secret):
         total_synced = 0
         try:
             auth = oss2.Auth(access_key_id, access_key_secret)
-            service = oss2.Service(auth, 'https://oss.aliyuncs.com')
+            service = oss2.Service(auth, f'https://{get_api_endpoint("oss", account_id)}')
             for bucket in oss2.BucketIterator(service):
                 try:
                     bucket_info = bucket
@@ -969,7 +1073,7 @@ def sync_redis(account_id, access_key_id, access_key_secret):
                     access_key_id=access_key_id,
                     access_key_secret=access_key_secret
                 )
-                config.endpoint = 'r-kvstore.aliyuncs.com'
+                config.endpoint = get_api_endpoint('redis', account_id)
                 client = KvstoreClient(config)
                 app.logger.info(f"Redis同步 {region_id} endpoint=r-kvstore.aliyuncs.com")
 
@@ -1046,7 +1150,7 @@ def sync_vpc(account_id, access_key_id, access_key_secret):
         for region_id in get_default_regions():
             try:
                 config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
-                config.endpoint = 'vpc.aliyuncs.com'
+                config.endpoint = get_api_endpoint('vpc', account_id)
                 client = VpcClient(config)
 
                 page_number = 1
@@ -1095,7 +1199,7 @@ def sync_vswitch(account_id, access_key_id, access_key_secret):
         for region_id in get_default_regions():
             try:
                 config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
-                config.endpoint = 'vpc.aliyuncs.com'
+                config.endpoint = get_api_endpoint('vpc', account_id)
                 client = VpcClient(config)
 
                 page_number = 1
@@ -1156,7 +1260,7 @@ def sync_eip(account_id, access_key_id, access_key_secret):
         for region_id in get_default_regions():
             try:
                 config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
-                config.endpoint = 'vpc.aliyuncs.com'
+                config.endpoint = get_api_endpoint('vpc', account_id)
                 client = VpcClient(config)
 
                 page_number = 1
@@ -1167,7 +1271,7 @@ def sync_eip(account_id, access_key_id, access_key_secret):
 
                     for eip in eips:
                         execute_db('''
-                            INSERT OR REPLACE INTO eip_instances
+                            INSERT INTO eip_instances
                             (account_id, instance_id, ip_address, name, status, bandwidth, region_id, charge_type, created_time, updated_at)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (
@@ -1207,7 +1311,7 @@ def sync_nat(account_id, access_key_id, access_key_secret):
         for region_id in get_default_regions():
             try:
                 config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
-                config.endpoint = 'vpc.aliyuncs.com'
+                config.endpoint = get_api_endpoint('vpc', account_id)
                 client = VpcClient(config)
 
                 page_number = 1
@@ -1573,6 +1677,21 @@ def sync_security_events(account_id, access_key_id, access_key_secret, days=30):
         return 0
 
 
+def _compute_details_summary(bill_items):
+    """按产品类型合并账单明细，返回汇总字典"""
+    merged = {}
+    for d in bill_items:
+        code = d.get('product_code') or d.get('product_type') or 'other'
+        detail = d.get('product_detail') or d.get('product_type') or '-'
+        key = f'{code}__{detail}'
+        if key not in merged:
+            merged[key] = {'after_tax_amount': 0, 'cash_amount': 0, 'deduct_amount': 0}
+        merged[key]['after_tax_amount'] += float(d.get('after_tax_amount') or d.get('pretax_amount') or 0)
+        merged[key]['cash_amount'] += float(d.get('cash_amount') or 0)
+        merged[key]['deduct_amount'] += float(d.get('deduct_amount') or 0)
+    return merged
+
+
 def sync_bill(account_id, access_key_id, access_key_secret):
     """同步账单数据（仅当月）"""
     try:
@@ -1581,12 +1700,40 @@ def sync_bill(account_id, access_key_id, access_key_secret):
         from alibabacloud_tea_openapi import models as open_api_models
 
         acct_name = get_account_name(account_id)
-        config = open_api_models.Config(
-            access_key_id=access_key_id,
-            access_key_secret=access_key_secret
-        )
-        config.endpoint = 'business.aliyuncs.com'
-        client = BssClient(config)
+        # 根据币种选择端点，国际站尝试多个端点
+        currency = get_account_currency(account_id)
+        primary_ep = get_api_endpoint('bss', account_id)
+        bss_endpoints = [primary_ep, 'business.aliyuncs.com'] if currency == 'SGD' else [primary_ep]
+
+        client = None
+        for ep in bss_endpoints:
+            try:
+                cfg = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
+                cfg.endpoint = ep
+                c = BssClient(cfg)
+                # 测试调用验证端点
+                req_class = getattr(bss_models, 'QueryAccountBalanceRequest', None) or getattr(bss_models, 'QueryaccountbalanceRequest', None)
+                if req_class:
+                    c.query_account_balance(req_class())
+                else:
+                    c.query_account_balance()
+                client = c
+                app.logger.info(f"[账单] {acct_name} 使用BSS端点: {ep}")
+                break
+            except Exception as test_err:
+                err_msg = str(test_err)
+                if 'InvalidAccessKeyId' in err_msg or 'InvalidAccessKeySecret' in err_msg:
+                    app.logger.warning(f"[账单] {acct_name} 端点 {ep} 认证失败，尝试下一个")
+                    continue
+                else:
+                    # 其他错误（如权限不足但有数据）说明端点可用
+                    client = c
+                    app.logger.info(f"[账单] {acct_name} 使用BSS端点: {ep} (测试调用有其他错误: {err_msg})")
+                    break
+
+        if not client:
+            app.logger.error(f"[账单] {acct_name} 所有BSS端点均认证失败")
+            return []
 
         # 同步当月账单
         synced_cycles = []
@@ -1622,22 +1769,46 @@ def sync_bill(account_id, access_key_id, access_key_secret):
                 if not items_list:
                     break
 
-                for item in items_list:
+                for idx, item in enumerate(items_list):
+                    # 调试：打印前3个 item 的所有属性和值
+                    if idx < 3:
+                        attrs = {attr: getattr(item, attr, 'N/A') for attr in dir(item) if not attr.startswith('_') and not callable(getattr(item, attr, None))}
+                        app.logger.info(f"[账单调试] Item {idx} 属性值: {attrs}")
+                    
+                    # 阿里云 BSS API 字段：
+                    # PretaxAmount = 税前金额（定价币种，默认USD）
+                    # AfterTaxAmount = 税后金额（本地付款币种）✅
+                    # PretaxAmountLocal = 本地货币税前金额
+                    pretax = float(str(getattr(item, 'pretax_amount', 0) or 0).replace(',', '') or 0)
+                    tax = float(str(getattr(item, 'tax_amount', 0) or 0).replace(',', '') or 0)
+                    cash_amount = float(str(getattr(item, 'cash_amount', 0) or 0).replace(',', '') or 0)
+                    deduct_amount = float(str(getattr(item, 'deduct_amount', 0) or 0).replace(',', '') or 0)
+                    
+                    # 优先使用 AfterTaxAmount（税后金额）
+                    after_tax_raw = getattr(item, 'after_tax_amount', None)
+                    if after_tax_raw is not None and after_tax_raw != '':
+                        after_tax_amount = float(str(after_tax_raw).replace(',', '') or 0)
+                    else:
+                        # 回退：税前 + 税
+                        after_tax_amount = pretax + tax
+                    
+                    if idx < 3:
+                        app.logger.info(f"[账单调试] pretax={pretax}, tax={tax}, after_tax_raw={after_tax_raw}, final={after_tax_amount}")
+                    
                     item_dict = {
                         'billing_cycle': getattr(item, 'billing_cycle', ''),
                         'product_code': getattr(item, 'product_code', ''),
                         'product_type': getattr(item, 'product_type', ''),
                         'product_detail': getattr(item, 'product_detail', ''),
-                        'deduct_amount': getattr(item, 'deduct_amount', 0),
-                        'pretax_amount': getattr(item, 'pretax_amount', 0),
-                        'cash_amount': getattr(item, 'cash_amount', 0),
+                        'deduct_amount': deduct_amount,
+                        'pretax_amount': pretax,
+                        'tax_amount': tax,
+                        'after_tax_amount': after_tax_amount,
+                        'cash_amount': cash_amount,
                         'owner_id': getattr(item, 'owner_id', ''),
                     }
                     bill_items.append(item_dict)
-                    try:
-                        total_amount += float(str(getattr(item, 'pretax_amount', 0) or 0).replace(',', ''))
-                    except (ValueError, TypeError):
-                        pass
+                    total_amount += after_tax_amount
 
                 # 检查是否还有下一页
                 total_count = int(getattr(data, 'total_count', 0) or 0)
@@ -1645,11 +1816,14 @@ def sync_bill(account_id, access_key_id, access_key_secret):
                     break
                 page_num += 1
 
+            # 计算明细汇总并存储
+            details_summary = _compute_details_summary(bill_items)
             execute_db('''
                 INSERT OR REPLACE INTO monthly_bills
-                (account_id, billing_cycle, total_amount, details, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (account_id, billing_cycle, total_amount, json.dumps(bill_items, ensure_ascii=False), datetime.now()))
+                (account_id, billing_cycle, total_amount, details, details_summary, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (account_id, billing_cycle, total_amount, json.dumps(bill_items, ensure_ascii=False),
+                  json.dumps(details_summary, ensure_ascii=False), datetime.now()))
             synced_cycles.append(billing_cycle)
             app.logger.info(f"[账单] {billing_cycle} 同步成功，金额: {total_amount}")
 
@@ -1673,12 +1847,39 @@ def sync_balance(account_id, access_key_id, access_key_secret):
         from alibabacloud_tea_openapi import models as open_api_models
 
         acct_name = get_account_name(account_id)
-        config = open_api_models.Config(
-            access_key_id=access_key_id,
-            access_key_secret=access_key_secret
-        )
-        config.endpoint = 'business.aliyuncs.com'
-        client = BssClient(config)
+        # 根据币种选择端点，国际站尝试多个端点
+        currency = get_account_currency(account_id)
+        primary_ep = get_api_endpoint('bss', account_id)
+        bss_endpoints = [primary_ep, 'business.aliyuncs.com'] if currency == 'SGD' else [primary_ep]
+
+        client = None
+        for ep in bss_endpoints:
+            try:
+                cfg = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
+                cfg.endpoint = ep
+                c = BssClient(cfg)
+                # 测试调用验证端点
+                req_class = getattr(bss_models, 'QueryAccountBalanceRequest', None) or getattr(bss_models, 'QueryaccountbalanceRequest', None)
+                if req_class:
+                    c.query_account_balance(req_class())
+                else:
+                    c.query_account_balance()
+                client = c
+                app.logger.info(f"[余额] {acct_name} 使用BSS端点: {ep}")
+                break
+            except Exception as test_err:
+                err_msg = str(test_err)
+                if 'InvalidAccessKeyId' in err_msg or 'InvalidAccessKeySecret' in err_msg:
+                    app.logger.warning(f"[余额] {acct_name} 端点 {ep} 认证失败，尝试下一个")
+                    continue
+                else:
+                    client = c
+                    app.logger.info(f"[余额] {acct_name} 使用BSS端点: {ep}")
+                    break
+
+        if not client:
+            app.logger.error(f"[余额] {acct_name} 所有BSS端点均认证失败")
+            return False
 
                 # 兼容不同SDK版本的方法名
         balance_method = getattr(client, 'query_account_balance', None) or getattr(client, 'queryaccountbalance', None)
@@ -1832,6 +2033,18 @@ def do_sync_account(account_id, sync_type='all'):
     """同步单个账号数据
     sync_type: 'all' = 全部, 'resources' = 仅资源, 'bills' = 仅账单
     """
+    lock = _get_account_sync_lock(account_id)
+    if not lock.acquire(blocking=False):
+        app.logger.warning(f"[同步] 账号 {account_id} 正在同步中，跳过本次")
+        return {'success': False, 'message': '该账号正在同步中，请稍后再试'}
+    try:
+        return _do_sync_account_inner(account_id, sync_type)
+    finally:
+        lock.release()
+
+
+def _do_sync_account_inner(account_id, sync_type='all'):
+    """实际执行同步的内部函数"""
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -2141,7 +2354,7 @@ def api_get_accounts():
     """获取所有账号列表"""
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute('SELECT id, name, access_key_id, remark, created_at, updated_at, last_sync_at, aliyun_account_id, aliyun_account_name, balance_threshold FROM accounts ORDER BY id')
+    cursor.execute('SELECT id, name, access_key_id, remark, created_at, updated_at, last_sync_at, aliyun_account_id, aliyun_account_name, balance_threshold, currency FROM accounts ORDER BY id')
     accounts = []
     for row in cursor.fetchall():
         acct = dict(row)
@@ -2168,14 +2381,17 @@ def api_add_account():
             balance_threshold = 20000
     else:
         balance_threshold = 20000
+    currency = data.get('currency', 'CNY').strip() or 'CNY'
+    if currency not in ('CNY', 'SGD'):
+        currency = 'CNY'
 
     if not name or not access_key_id or not access_key_secret:
         return jsonify({'error': '请填写账号名称、AccessKey ID和AccessKey Secret'}), 400
 
     try:
         last_id = execute_db(
-            'INSERT INTO accounts (name, access_key_id, access_key_secret, remark, balance_threshold) VALUES (?, ?, ?, ?, ?)',
-            (name, access_key_id, access_key_secret, remark, balance_threshold)
+            'INSERT INTO accounts (name, access_key_id, access_key_secret, remark, balance_threshold, currency) VALUES (?, ?, ?, ?, ?, ?)',
+            (name, access_key_id, access_key_secret, remark, balance_threshold, currency)
         )
         log_operation('账号管理', '添加账号', f'新增账号：{name}', account_id=last_id, account_name=name)
         return jsonify({'success': True, 'id': last_id, 'message': '账号添加成功'})
@@ -2220,18 +2436,21 @@ def api_update_account(account_id):
             balance_threshold = 20000
     else:
         balance_threshold = 20000
+    currency = data.get('currency', 'CNY').strip() or 'CNY'
+    if currency not in ('CNY', 'SGD'):
+        currency = 'CNY'
 
     try:
         if access_key_secret:
             execute_db('''
-                UPDATE accounts SET name=?, access_key_id=?, access_key_secret=?, remark=?, balance_threshold=?, updated_at=?
+                UPDATE accounts SET name=?, access_key_id=?, access_key_secret=?, remark=?, balance_threshold=?, currency=?, updated_at=?
                 WHERE id=?
-            ''', (name, access_key_id, access_key_secret, remark, balance_threshold, datetime.now(), account_id))
+            ''', (name, access_key_id, access_key_secret, remark, balance_threshold, currency, datetime.now(), account_id))
         else:
             execute_db('''
-                UPDATE accounts SET name=?, access_key_id=?, remark=?, balance_threshold=?, updated_at=?
+                UPDATE accounts SET name=?, access_key_id=?, remark=?, balance_threshold=?, currency=?, updated_at=?
                 WHERE id=?
-            ''', (name, access_key_id, remark, balance_threshold, datetime.now(), account_id))
+            ''', (name, access_key_id, remark, balance_threshold, currency, datetime.now(), account_id))
         log_operation('账号管理', '更新账号', f'更新账号：{name}', account_id=account_id, account_name=name)
         return jsonify({'success': True, 'message': '账号更新成功'})
     except Exception as e:
@@ -2395,6 +2614,209 @@ def api_sync_all_accounts():
         return jsonify({'success': False, 'message': f'启动同步失败: {str(e)}'}), 500
 
 
+@app.route('/api/accounts/<int:account_id>/sync-history-bills', methods=['POST'])
+def api_sync_history_bills(account_id):
+    """同步历史月份账单（指定开始月份）"""
+    try:
+        data = request.get_json(silent=True) or {}
+        # 支持 start_month 参数，格式 YYYY-MM
+        start_month = data.get('start_month', '')
+        if not start_month:
+            # 兼容旧的 months 参数
+            months = int(data.get('months', 6))
+            if months < 1 or months > 24:
+                months = 6
+            now = datetime.now()
+            start_month = (now - timedelta(days=30 * (months - 1))).strftime('%Y-%m')
+
+        # 获取账号信息
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, name, access_key_id, access_key_secret FROM accounts WHERE id = ?', (account_id,))
+        acct = cursor.fetchone()
+        conn.close()
+
+        if not acct:
+            return jsonify({'success': False, 'message': '账号不存在'}), 404
+
+        ak = acct['access_key_id']
+        sk = acct['access_key_secret']
+        acct_name = acct['name']
+
+        task_id = f"hist_bill_{account_id}_{int(datetime.now().timestamp())}"
+        with sync_tasks_lock:
+            sync_tasks[task_id] = {
+                'status': 'running',
+                'type': 'history_bills',
+                'account_id': account_id,
+                'start_month': start_month,
+                'current': 0,
+                'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+
+        t = threading.Thread(target=_run_history_bills_sync, args=(task_id, account_id, acct_name, ak, sk, start_month), daemon=True)
+        t.start()
+        return jsonify({'success': True, 'task_id': task_id, 'message': f'历史账单同步任务已启动，从 {start_month} 开始'})
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'启动同步失败: {str(e)}'}), 500
+
+
+def _run_history_bills_sync(task_id, account_id, acct_name, ak, sk, start_month):
+    """执行历史账单同步"""
+    app.logger.warning(f"[历史账单] 开始同步 {acct_name} (account_id={account_id}) 从 {start_month}")
+    try:
+        from alibabacloud_bssopenapi20171214.client import Client as BssClient
+        from alibabacloud_bssopenapi20171214 import models as bss_models
+        from alibabacloud_tea_openapi import models as open_api_models
+
+        # 获取BSS客户端
+        currency = get_account_currency(account_id)
+        primary_ep = get_api_endpoint('bss', account_id)
+        bss_endpoints = [primary_ep, 'business.aliyuncs.com'] if currency == 'SGD' else [primary_ep]
+        app.logger.warning(f"[历史账单] 币种={currency}, 端点={bss_endpoints}")
+
+        client = None
+        for ep in bss_endpoints:
+            try:
+                cfg = open_api_models.Config(access_key_id=ak, access_key_secret=sk)
+                cfg.endpoint = ep
+                c = BssClient(cfg)
+                req_class = getattr(bss_models, 'QueryAccountBalanceRequest', None) or getattr(bss_models, 'QueryaccountbalanceRequest', None)
+                if req_class:
+                    c.query_account_balance(req_class())
+                else:
+                    c.query_account_balance()
+                client = c
+                break
+            except Exception:
+                continue
+
+        if not client:
+            with sync_tasks_lock:
+                sync_tasks[task_id] = {'status': 'error', 'message': 'BSS端点认证失败', 'current': 0}
+            return
+
+        # 计算需要同步的月份（从 start_month 到当前月）
+        cycles = []
+        try:
+            start_year, start_mon = map(int, start_month.split('-'))
+            now = datetime.now()
+            current_year, current_mon = now.year, now.month
+            
+            y, m = start_year, start_mon
+            while (y < current_year) or (y == current_year and m <= current_mon):
+                cycles.append(f'{y}-{m:02d}')
+                m += 1
+                if m > 12:
+                    m = 1
+                    y += 1
+        except Exception as e:
+            with sync_tasks_lock:
+                sync_tasks[task_id] = {'status': 'error', 'message': f'日期格式错误: {str(e)}'}
+            return
+
+        synced = []
+        failed = []
+        bill_req_class = getattr(bss_models, 'QueryBillRequest', None) or getattr(bss_models, 'QuerybillRequest', None)
+        bill_method = getattr(client, 'query_bill', None) or getattr(client, 'querybill', None)
+        app.logger.warning(f"[历史账单] {acct_name} 待同步月份: {cycles}, SDK方法: query_bill={bill_req_class is not None}")
+
+        if not bill_req_class or not bill_method:
+            with sync_tasks_lock:
+                sync_tasks[task_id] = {'status': 'error', 'message': 'BSS SDK方法不可用'}
+            return
+
+        for cycle_idx, cycle in enumerate(cycles):
+            try:
+                with sync_tasks_lock:
+                    sync_tasks[task_id]['current'] = cycle_idx + 1
+
+                total_amount = 0
+                bill_items = []
+                page_num = 1
+                while True:
+                    req = bill_req_class(billing_cycle=cycle, page_size=300, page_num=page_num)
+                    resp = bill_method(req)
+                    data = resp.body.data if resp.body else None
+                    if not data or not hasattr(data, 'items') or not data.items:
+                        break
+                    items_list = data.items.item if hasattr(data.items, 'item') else []
+                    if not items_list:
+                        break
+                    for item_idx, item in enumerate(items_list):
+                        # 调试：打印前3个 item 的所有属性和值
+                        if item_idx < 3:
+                            attrs = {attr: getattr(item, attr, 'N/A') for attr in dir(item) if not attr.startswith('_') and not callable(getattr(item, attr, None))}
+                            app.logger.info(f"[历史账单调试] Item {item_idx} 属性值: {attrs}")
+                        
+                        # 阿里云 BSS API 字段：
+                        # PretaxAmount = 税前金额（定价币种，默认USD）
+                        # AfterTaxAmount = 税后金额（本地付款币种）✅
+                        # PretaxAmountLocal = 本地货币税前金额
+                        pretax = float(str(getattr(item, 'pretax_amount', 0) or 0).replace(',', '') or 0)
+                        tax = float(str(getattr(item, 'tax_amount', 0) or 0).replace(',', '') or 0)
+                        cash_amount = float(str(getattr(item, 'cash_amount', 0) or 0).replace(',', '') or 0)
+                        deduct_amount = float(str(getattr(item, 'deduct_amount', 0) or 0).replace(',', '') or 0)
+                        
+                        # 优先使用 AfterTaxAmount（税后金额）
+                        after_tax_raw = getattr(item, 'after_tax_amount', None)
+                        if after_tax_raw is not None and after_tax_raw != '':
+                            after_tax_amount = float(str(after_tax_raw).replace(',', '') or 0)
+                        else:
+                            # 回退：税前 + 税
+                            after_tax_amount = pretax + tax
+                        
+                        if item_idx < 3:
+                            app.logger.info(f"[历史账单调试] pretax={pretax}, tax={tax}, after_tax_raw={after_tax_raw}, final={after_tax_amount}")
+                        
+                        item_dict = {
+                            'billing_cycle': getattr(item, 'billing_cycle', ''),
+                            'product_code': getattr(item, 'product_code', ''),
+                            'product_type': getattr(item, 'product_type', ''),
+                            'product_detail': getattr(item, 'product_detail', ''),
+                            'deduct_amount': deduct_amount,
+                            'pretax_amount': pretax,
+                            'tax_amount': tax,
+                            'after_tax_amount': after_tax_amount,
+                            'cash_amount': cash_amount,
+                            'owner_id': getattr(item, 'owner_id', ''),
+                        }
+                        bill_items.append(item_dict)
+                        total_amount += after_tax_amount
+                    total_count = int(getattr(data, 'total_count', 0) or 0)
+                    if page_num * 300 >= total_count:
+                        break
+                    page_num += 1
+
+                # 计算明细汇总并存储
+                details_summary = _compute_details_summary(bill_items)
+                execute_db('''
+                    INSERT OR REPLACE INTO monthly_bills
+                    (account_id, billing_cycle, total_amount, details, details_summary, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (account_id, cycle, total_amount, json.dumps(bill_items, ensure_ascii=False),
+                      json.dumps(details_summary, ensure_ascii=False), datetime.now()))
+                synced.append(cycle)
+                app.logger.info(f"[历史账单] {acct_name} {cycle} 同步成功，金额: {total_amount}")
+
+            except Exception as e:
+                failed.append(cycle)
+                app.logger.warning(f"[历史账单] {acct_name} {cycle} 同步失败: {str(e)}")
+
+        with sync_tasks_lock:
+            sync_tasks[task_id] = {
+                'status': 'done',
+                'synced': synced,
+                'failed': failed,
+                'current': len(cycles),
+                'message': f'同步完成，成功{len(synced)} 个月，失败{len(failed)} 个月'
+            }
+
+    except Exception as e:
+        with sync_tasks_lock:
+            sync_tasks[task_id] = {'status': 'error', 'message': str(e)}
+
+
 @app.route('/api/sync-status/<task_id>', methods=['GET'])
 def api_get_sync_status(task_id):
     """查询同步任务状态"""
@@ -2438,7 +2860,7 @@ def api_get_overview():
     cursor = conn.cursor()
 
     # 获取所有账号
-    cursor.execute('SELECT id, name, remark, aliyun_account_id, balance_threshold FROM accounts ORDER BY id')
+    cursor.execute('SELECT id, name, remark, aliyun_account_id, balance_threshold, currency FROM accounts ORDER BY id')
     accounts = [dict(row) for row in cursor.fetchall()]
 
     current_month = datetime.now().strftime('%Y-%m')
@@ -2487,6 +2909,7 @@ def api_get_overview():
             'available_cash': round(balance_row['available_cash'], 2) if balance_row else 0,
             'credit_amount': round(balance_row['credit_amount'], 2) if balance_row else 0,
             'balance_threshold': acct.get('balance_threshold') or 20000,
+            'currency': acct.get('currency') or 'CNY',
         })
 
     conn.close()
@@ -2495,292 +2918,70 @@ def api_get_overview():
 
 # ---------- 资源管理 ----------
 
-@app.route('/api/ecs', methods=['GET'])
-def api_get_ecs():
-    """获取ECS实例列表，支持 status/region 筛选"""
+def _query_resource(table, alias, search_fields, has_status=True, has_region=True, order_by=None):
+    """通用资源查询函数，替代重复的 API 查询逻辑"""
     account_id = request.args.get('account_id')
     keyword = request.args.get('keyword', '').strip()
-    status = request.args.get('status', '').strip()
-    region = request.args.get('region', '').strip()
+    status = request.args.get('status', '').strip() if has_status else None
+    region = request.args.get('region', '').strip() if has_region else None
 
-    conn = get_db()
-    cursor = conn.cursor()
-
-    sql = '''
-        SELECT e.*, a.name as account_name
-        FROM ecs_instances e
-        LEFT JOIN accounts a ON e.account_id = a.id
-        WHERE 1=1
-    '''
+    sql = f'SELECT {alias}.*, a.name as account_name FROM {table} {alias} LEFT JOIN accounts a ON {alias}.account_id = a.id WHERE 1=1'
     params = []
 
     if account_id:
-        sql += ' AND e.account_id = ?'
+        sql += f' AND {alias}.account_id = ?'
         params.append(account_id)
-
     if status:
-        sql += ' AND e.status = ?'
+        sql += f' AND {alias}.status = ?'
         params.append(status)
-
     if region:
-        sql += ' AND e.region_id = ?'
+        sql += f' AND {alias}.region_id = ?'
         params.append(region)
-
     if keyword:
-        sql += ''' AND (e.instance_id LIKE ? OR e.instance_name LIKE ? OR e.private_ip LIKE ? OR e.public_ip LIKE ?)'''
-        kw = f'%{keyword}%'
-        params.extend([kw, kw, kw, kw])
+        conditions = ' OR '.join(f'{alias}.{f} LIKE ?' for f in search_fields)
+        sql += f' AND ({conditions})'
+        params.extend([f'%{keyword}%'] * len(search_fields))
 
-    sql += ' ORDER BY e.created_time DESC, e.account_id, e.region_id'
+    sql += f' ORDER BY {order_by}' if order_by else f' ORDER BY {alias}.created_time DESC, {alias}.account_id, {alias}.region_id'
 
-    cursor.execute(sql, params)
-    instances = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return jsonify(instances)
+    return jsonify([dict(r) for r in query_db(sql, params)])
 
+
+@app.route('/api/ecs', methods=['GET'])
+def api_get_ecs():
+    return _query_resource('ecs_instances', 'e', ['instance_id', 'instance_name', 'private_ip', 'public_ip'])
 
 @app.route('/api/rds', methods=['GET'])
 def api_get_rds():
-    """获取RDS实例列表，支持 status/region 筛选"""
-    account_id = request.args.get('account_id')
-    keyword = request.args.get('keyword', '').strip()
-    status = request.args.get('status', '').strip()
-    region = request.args.get('region', '').strip()
-
-    conn = get_db()
-    cursor = conn.cursor()
-
-    sql = '''
-        SELECT r.*, a.name as account_name
-        FROM rds_instances r
-        LEFT JOIN accounts a ON r.account_id = a.id
-        WHERE 1=1
-    '''
-    params = []
-
-    if account_id:
-        sql += ' AND r.account_id = ?'
-        params.append(account_id)
-
-    if status:
-        sql += ' AND r.status = ?'
-        params.append(status)
-
-    if region:
-        sql += ' AND r.region_id = ?'
-        params.append(region)
-
-    if keyword:
-        sql += ''' AND (r.instance_id LIKE ? OR r.instance_name LIKE ?)'''
-        kw = f'%{keyword}%'
-        params.extend([kw, kw])
-
-    sql += ' ORDER BY r.created_time DESC, r.account_id, r.region_id'
-
-    cursor.execute(sql, params)
-    instances = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return jsonify(instances)
-
+    return _query_resource('rds_instances', 'r', ['instance_id', 'instance_name'])
 
 @app.route('/api/slb', methods=['GET'])
 def api_get_slb():
-    """获取SLB实例列表，支持 status/region 筛选"""
-    account_id = request.args.get('account_id')
-    keyword = request.args.get('keyword', '').strip()
-    status = request.args.get('status', '').strip()
-    region = request.args.get('region', '').strip()
-
-    conn = get_db()
-    cursor = conn.cursor()
-
-    sql = '''
-        SELECT s.*, a.name as account_name
-        FROM slb_instances s
-        LEFT JOIN accounts a ON s.account_id = a.id
-        WHERE 1=1
-    '''
-    params = []
-
-    if account_id:
-        sql += ' AND s.account_id = ?'
-        params.append(account_id)
-
-    if status:
-        sql += ' AND s.status = ?'
-        params.append(status)
-
-    if region:
-        sql += ' AND s.region_id = ?'
-        params.append(region)
-
-    if keyword:
-        sql += ''' AND (s.instance_id LIKE ? OR s.instance_name LIKE ? OR s.address LIKE ?)'''
-        kw = f'%{keyword}%'
-        params.extend([kw, kw, kw])
-
-    sql += ' ORDER BY s.created_time DESC, s.account_id, s.region_id'
-
-    cursor.execute(sql, params)
-    instances = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return jsonify(instances)
-
+    return _query_resource('slb_instances', 's', ['instance_id', 'instance_name', 'address'])
 
 @app.route('/api/vpc', methods=['GET'])
 def api_get_vpc():
-    """获取VPC列表"""
-    account_id = request.args.get('account_id')
-    keyword = request.args.get('keyword', '').strip()
-    region = request.args.get('region', '').strip()
-
-    conn = get_db()
-    cursor = conn.cursor()
-
-    sql = '''
-        SELECT v.*, a.name as account_name
-        FROM vpc_instances v
-        LEFT JOIN accounts a ON v.account_id = a.id
-        WHERE 1=1
-    '''
-    params = []
-
-    if account_id:
-        sql += ' AND v.account_id = ?'
-        params.append(account_id)
-    if region:
-        sql += ' AND v.region_id = ?'
-        params.append(region)
-    if keyword:
-        sql += ' AND (v.instance_id LIKE ? OR v.vpc_name LIKE ? OR v.cidr_block LIKE ?)'
-        kw = f'%{keyword}%'
-        params.extend([kw, kw, kw])
-
-    sql += ' ORDER BY v.created_time DESC, v.account_id, v.region_id'
-
-    cursor.execute(sql, params)
-    instances = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return jsonify(instances)
-
+    return _query_resource('vpc_instances', 'v', ['instance_id', 'vpc_name', 'cidr_block'], has_status=False)
 
 @app.route('/api/vswitch', methods=['GET'])
 def api_get_vswitch():
-    """获取交换机列表"""
-    account_id = request.args.get('account_id')
-    keyword = request.args.get('keyword', '').strip()
-    region = request.args.get('region', '').strip()
-
-    conn = get_db()
-    cursor = conn.cursor()
-
-    sql = '''
-        SELECT vs.*, a.name as account_name
-        FROM vswitch_instances vs
-        LEFT JOIN accounts a ON vs.account_id = a.id
-        WHERE 1=1
-    '''
-    params = []
-
-    if account_id:
-        sql += ' AND vs.account_id = ?'
-        params.append(account_id)
-    if region:
-        sql += ' AND vs.region_id = ?'
-        params.append(region)
-    if keyword:
-        sql += ' AND (vs.instance_id LIKE ? OR vs.vswitch_name LIKE ? OR vs.cidr_block LIKE ?)'
-        kw = f'%{keyword}%'
-        params.extend([kw, kw, kw])
-
-    sql += ' ORDER BY vs.created_time DESC, vs.account_id, vs.region_id'
-
-    cursor.execute(sql, params)
-    instances = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return jsonify(instances)
-
+    return _query_resource('vswitch_instances', 'vs', ['instance_id', 'vswitch_name', 'cidr_block'], has_status=False)
 
 @app.route('/api/eip', methods=['GET'])
 def api_get_eip():
-    """获取弹性公网IP列表"""
-    account_id = request.args.get('account_id')
-    keyword = request.args.get('keyword', '').strip()
-    region = request.args.get('region', '').strip()
-    status = request.args.get('status', '').strip()
-
-    conn = get_db()
-    cursor = conn.cursor()
-
-    sql = '''
-        SELECT e.*, a.name as account_name
-        FROM eip_instances e
-        LEFT JOIN accounts a ON e.account_id = a.id
-        WHERE 1=1
-    '''
-    params = []
-
-    if account_id:
-        sql += ' AND e.account_id = ?'
-        params.append(account_id)
-    if region:
-        sql += ' AND e.region_id = ?'
-        params.append(region)
-    if status:
-        sql += ' AND e.status = ?'
-        params.append(status)
-    if keyword:
-        sql += ' AND (e.instance_id LIKE ? OR e.ip_address LIKE ? OR e.name LIKE ?)'
-        kw = f'%{keyword}%'
-        params.extend([kw, kw, kw])
-
-    sql += ' ORDER BY e.created_time DESC, e.account_id, e.region_id'
-
-    cursor.execute(sql, params)
-    instances = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return jsonify(instances)
-
+    return _query_resource('eip_instances', 'e', ['instance_id', 'ip_address', 'name'])
 
 @app.route('/api/nat', methods=['GET'])
 def api_get_nat():
-    """获取NAT网关列表"""
-    account_id = request.args.get('account_id')
-    keyword = request.args.get('keyword', '').strip()
-    region = request.args.get('region', '').strip()
-    status = request.args.get('status', '').strip()
+    return _query_resource('nat_instances', 'n', ['instance_id', 'name'])
 
-    conn = get_db()
-    cursor = conn.cursor()
+@app.route('/api/redis', methods=['GET'])
+def api_get_redis():
+    return _query_resource('redis_instances', 'r', ['instance_id', 'instance_name', 'connection_domain'])
 
-    sql = '''
-        SELECT n.*, a.name as account_name
-        FROM nat_instances n
-        LEFT JOIN accounts a ON n.account_id = a.id
-        WHERE 1=1
-    '''
-    params = []
-
-    if account_id:
-        sql += ' AND n.account_id = ?'
-        params.append(account_id)
-    if region:
-        sql += ' AND n.region_id = ?'
-        params.append(region)
-    if status:
-        sql += ' AND n.status = ?'
-        params.append(status)
-    if keyword:
-        sql += ' AND (n.instance_id LIKE ? OR n.name LIKE ?)'
-        kw = f'%{keyword}%'
-        params.extend([kw, kw])
-
-    sql += ' ORDER BY n.created_time DESC, n.account_id, n.region_id'
-
-    cursor.execute(sql, params)
-    instances = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return jsonify(instances)
+@app.route('/api/oss', methods=['GET'])
+def api_get_oss():
+    return _query_resource('oss_buckets', 'o', ['bucket_name', 'location'], has_status=False, has_region=False, order_by='o.creation_date DESC, o.bucket_name')
 
 
 @app.route('/api/security-events', methods=['GET'])
@@ -2841,84 +3042,6 @@ def api_get_security_events():
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/oss', methods=['GET'])
-def api_get_oss():
-    """获取OSS Bucket列表"""
-    account_id = request.args.get('account_id')
-    keyword = request.args.get('keyword', '').strip()
-
-    conn = get_db()
-    cursor = conn.cursor()
-
-    sql = '''
-        SELECT o.*, a.name as account_name
-        FROM oss_buckets o
-        LEFT JOIN accounts a ON o.account_id = a.id
-        WHERE 1=1
-    '''
-    params = []
-
-    if account_id:
-        sql += ' AND o.account_id = ?'
-        params.append(account_id)
-
-    if keyword:
-        sql += ''' AND (o.bucket_name LIKE ? OR o.location LIKE ?)'''
-        kw = f'%{keyword}%'
-        params.extend([kw, kw])
-
-    sql += ' ORDER BY o.creation_date DESC, o.bucket_name'
-
-    cursor.execute(sql, params)
-    buckets = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return jsonify(buckets)
-
-
-@app.route('/api/redis', methods=['GET'])
-def api_get_redis():
-    """获取Redis实例列表，支持 status/region 筛选"""
-    account_id = request.args.get('account_id')
-    keyword = request.args.get('keyword', '').strip()
-    status = request.args.get('status', '').strip()
-    region = request.args.get('region', '').strip()
-
-    conn = get_db()
-    cursor = conn.cursor()
-
-    sql = '''
-        SELECT r.*, a.name as account_name
-        FROM redis_instances r
-        LEFT JOIN accounts a ON r.account_id = a.id
-        WHERE 1=1
-    '''
-    params = []
-
-    if account_id:
-        sql += ' AND r.account_id = ?'
-        params.append(account_id)
-
-    if status:
-        sql += ' AND r.status = ?'
-        params.append(status)
-
-    if region:
-        sql += ' AND r.region_id = ?'
-        params.append(region)
-
-    if keyword:
-        sql += ''' AND (r.instance_id LIKE ? OR r.instance_name LIKE ? OR r.connection_domain LIKE ?)'''
-        kw = f'%{keyword}%'
-        params.extend([kw, kw, kw])
-
-    sql += ' ORDER BY r.created_time DESC, r.account_id, r.region_id'
-
-    cursor.execute(sql, params)
-    instances = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return jsonify(instances)
 
 
 # ---------- 续费价格查询 ----------
@@ -3134,6 +3257,8 @@ def api_get_regions():
 @app.route('/api/bills', methods=['GET'])
 def api_get_bills():
     """获取账单数据"""
+    import time
+    start_time = time.time()
     billing_cycle = request.args.get('billing_cycle', datetime.now().strftime('%Y-%m'))
     account_id = request.args.get('account_id')
 
@@ -3141,7 +3266,7 @@ def api_get_bills():
     cursor = conn.cursor()
 
     sql = '''
-        SELECT mb.*, a.name as account_name
+        SELECT mb.*, a.name as account_name, a.currency
         FROM monthly_bills mb
         LEFT JOIN accounts a ON mb.account_id = a.id
         WHERE mb.billing_cycle = ?
@@ -3157,28 +3282,83 @@ def api_get_bills():
     cursor.execute(sql, params)
     bills = [dict(row) for row in cursor.fetchall()]
 
-    # 解析账单明细
+    # 解析账单明细，计算已还款/待还款（不返回details给前端，减少数据传输）
+    total_details_size = 0
+    account_details_summary = {}
     for bill in bills:
-        try:
-            bill['details'] = json.loads(bill['details']) if bill['details'] else []
-        except (json.JSONDecodeError, TypeError):
-            bill['details'] = []
+        # 优先使用预计算的 details_summary，回退到解析 details
+        summary = None
+        if bill.get('details_summary'):
+            try:
+                summary = json.loads(bill['details_summary'])
+            except (json.JSONDecodeError, TypeError):
+                summary = None
+        
+        if summary is None:
+            # 回退：解析完整 details（旧数据未存储 summary）
+            try:
+                details = json.loads(bill['details']) if bill['details'] else []
+                total_details_size += len(details)
+            except (json.JSONDecodeError, TypeError):
+                details = []
+            paid = sum(max(0, float(d.get('cash_amount', 0) or 0)) for d in details)
+            summary = _compute_details_summary(details)
+        else:
+            # 从 summary 反推 paid_amount
+            paid = sum(v.get('cash_amount', 0) for v in summary.values())
+        
+        bill['paid_amount'] = round(paid, 2)
+        bill['unpaid_amount'] = round(bill['total_amount'] - paid, 2)
+        # 不返回 details 和 details_summary，减少响应数据量
+        del bill['details']
+        if 'details_summary' in bill:
+            del bill['details_summary']
+        account_details_summary[bill['account_id']] = summary
 
-    # 计算总额
-    total_amount = sum(b['total_amount'] for b in bills)
+    # 计算总额（仅统计人民币账户）
+    cny_bills = [b for b in bills if (b.get('currency') or 'CNY') != 'SGD']
+    total_amount = sum(b['total_amount'] for b in cny_bills)
+    total_paid = sum(b['paid_amount'] for b in cny_bills)
+    total_unpaid = sum(b['unpaid_amount'] for b in cny_bills)
+    app.logger.info(f"[账单汇总] cycle={billing_cycle}, cny_bills={len(cny_bills)}, total={total_amount}, paid={total_paid}, unpaid={total_unpaid}")
 
     # 获取所有可用的账单月份
     cursor.execute('SELECT DISTINCT billing_cycle FROM monthly_bills ORDER BY billing_cycle DESC')
     available_cycles = [row['billing_cycle'] for row in cursor.fetchall()]
 
     conn.close()
+    print(f"[账单查询] cycle={billing_cycle}, 找到 {len(bills)} 条记录，明细总数 {total_details_size}，耗时 {time.time() - start_time:.2f}s")
 
     return jsonify({
         'billing_cycle': billing_cycle,
         'bills': bills,
         'total_amount': round(total_amount, 2),
-        'available_cycles': available_cycles
+        'total_paid': round(total_paid, 2),
+        'total_unpaid': round(total_unpaid, 2),
+        'available_cycles': available_cycles,
+        'account_details_summary': account_details_summary
     })
+
+
+@app.route('/api/bills/details', methods=['GET'])
+def api_get_bill_details():
+    """获取指定账号指定月份的账单明细"""
+    account_id = request.args.get('account_id')
+    billing_cycle = request.args.get('billing_cycle')
+    if not account_id or not billing_cycle:
+        return jsonify({'details': []})
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT details FROM monthly_bills WHERE account_id = ? AND billing_cycle = ?', (account_id, billing_cycle))
+    row = cursor.fetchone()
+    conn.close()
+    if not row or not row['details']:
+        return jsonify({'details': []})
+    try:
+        details = json.loads(row['details'])
+    except (json.JSONDecodeError, TypeError):
+        details = []
+    return jsonify({'details': details})
 
 
 @app.route('/api/bills/summary', methods=['GET'])
@@ -3210,7 +3390,7 @@ def api_get_yearly_bills():
     cursor = conn.cursor()
 
     cursor.execute('''
-        SELECT mb.account_id, a.name as account_name,
+        SELECT mb.account_id, a.name as account_name, a.currency,
                SUM(mb.total_amount) as yearly_amount,
                COUNT(DISTINCT mb.billing_cycle) as months_count
         FROM monthly_bills mb
@@ -3224,23 +3404,55 @@ def api_get_yearly_bills():
     for item in yearly_bills:
         item['yearly_amount'] = round(item['yearly_amount'], 2)
 
+    # 计算每个账号的已还款/待还款（优先从 details_summary，回退到 details）
+    cursor.execute('''
+        SELECT mb.account_id, mb.details_summary, mb.details
+        FROM monthly_bills mb
+        WHERE mb.billing_cycle LIKE ?
+    ''', (f'{year}-%',))
+    paid_by_account = {}
+    for row in cursor.fetchall():
+        aid = row['account_id']
+        if aid not in paid_by_account:
+            paid_by_account[aid] = 0
+        if row['details_summary']:
+            try:
+                summary = json.loads(row['details_summary'])
+                paid_by_account[aid] += sum(v.get('cash_amount', 0) for v in summary.values())
+            except (json.JSONDecodeError, TypeError):
+                pass
+        elif row['details']:
+            # 回退：解析完整 details
+            try:
+                details = json.loads(row['details'])
+                paid_by_account[aid] += sum(max(0, float(d.get('cash_amount', 0) or 0)) for d in details)
+            except (json.JSONDecodeError, TypeError):
+                pass
+    for item in yearly_bills:
+        paid = round(paid_by_account.get(item['account_id'], 0), 2)
+        item['yearly_paid'] = paid
+        item['yearly_unpaid'] = round(item['yearly_amount'] - paid, 2)
+
     # 获取所有年份
     cursor.execute('SELECT DISTINCT substr(billing_cycle, 1, 4) as year FROM monthly_bills ORDER BY year DESC')
     available_years = [row['year'] for row in cursor.fetchall()]
 
-    # 获取月度趋势
+    # 获取月度趋势（仅统计人民币账户）
     cursor.execute('''
-        SELECT billing_cycle, SUM(total_amount) as total_amount
-        FROM monthly_bills
-        WHERE billing_cycle LIKE ?
-        GROUP BY billing_cycle
-        ORDER BY billing_cycle
+        SELECT mb.billing_cycle, SUM(mb.total_amount) as total_amount
+        FROM monthly_bills mb
+        LEFT JOIN accounts a ON mb.account_id = a.id
+        WHERE mb.billing_cycle LIKE ? AND (a.currency IS NULL OR a.currency != 'SGD')
+        GROUP BY mb.billing_cycle
+        ORDER BY mb.billing_cycle
     ''', (f'{year}-%',))
     monthly_trend = [dict(row) for row in cursor.fetchall()]
     for item in monthly_trend:
         item['total_amount'] = round(item['total_amount'], 2)
 
-    total_yearly = sum(item['yearly_amount'] for item in yearly_bills)
+    total_yearly = sum(item['yearly_amount'] for item in yearly_bills if (item.get('currency') or 'CNY') != 'SGD')
+    total_yearly_paid = sum(item['yearly_paid'] for item in yearly_bills if (item.get('currency') or 'CNY') != 'SGD')
+    total_yearly_unpaid = sum(item['yearly_unpaid'] for item in yearly_bills if (item.get('currency') or 'CNY') != 'SGD')
 
     conn.close()
     return jsonify({
@@ -3248,6 +3460,8 @@ def api_get_yearly_bills():
         'yearly_bills': yearly_bills,
         'monthly_trend': monthly_trend,
         'total_yearly': round(total_yearly, 2),
+        'total_yearly_paid': round(total_yearly_paid, 2),
+        'total_yearly_unpaid': round(total_yearly_unpaid, 2),
         'available_years': available_years
     })
 
@@ -3828,7 +4042,7 @@ def _get_cms_client(account_id):
             access_key_id=row['access_key_id'],
             access_key_secret=row['access_key_secret']
         )
-        config.endpoint = 'metrics.aliyuncs.com'
+        config.endpoint = get_api_endpoint('cms', account_id)
         return CmsClient(config), None
     except ImportError:
         return None, 'CloudMonitor SDK 未安装，请运行 pip install alibabacloud_cms20190101'
@@ -4199,6 +4413,240 @@ def api_update_menu_order():
         ('menu_order', json.dumps(order), datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
     )
     return jsonify({'success': True})
+
+
+# ---------- 公网大全 ----------
+
+@app.route('/api/source-labels', methods=['GET'])
+def api_get_source_labels():
+    """获取来源名称配置"""
+    rows = query_db('SELECT source, label, sort_order FROM source_labels ORDER BY sort_order')
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/source-labels', methods=['PUT'])
+def api_update_source_labels():
+    """全量更新来源名称配置（支持新增、修改、删除）"""
+    data = request.json
+    if not isinstance(data, list):
+        return jsonify({'success': False, 'message': '参数格式错误'}), 400
+    # 获取当前所有来源
+    existing = {r['source'] for r in query_db('SELECT source FROM source_labels')}
+    new_sources = set()
+    for idx, item in enumerate(data):
+        source = item.get('source', '').strip()
+        label = item.get('label', '').strip()
+        if source and label:
+            new_sources.add(source)
+            if source in existing:
+                execute_db('UPDATE source_labels SET label = ?, sort_order = ? WHERE source = ?', (label, idx + 1, source))
+            else:
+                execute_db('INSERT INTO source_labels (source, label, sort_order) VALUES (?, ?, ?)', (source, label, idx + 1))
+    # 删除不在列表中的来源（同时删除关联的公网IP）
+    to_delete = existing - new_sources
+    for source in to_delete:
+        execute_db('DELETE FROM public_ips WHERE source = ?', (source,))
+        execute_db('DELETE FROM source_labels WHERE source = ?', (source,))
+    return jsonify({'success': True, 'message': '更新成功'})
+
+
+@app.route('/api/public-ips', methods=['GET'])
+def api_get_public_ips():
+    """获取所有公网IP（阿里云EIP+SLB + 手动录入）"""
+    conn = get_db()
+    cursor = conn.cursor()
+    result = []
+
+    # 1. 阿里云EIP（按账号汇总）
+    cursor.execute('''
+        SELECT a.id as account_id, a.name as account_name, e.ip_address, e.instance_id,
+               e.name as instance_name, e.status, e.bandwidth, e.region_id
+        FROM eip_instances e
+        JOIN accounts a ON e.account_id = a.id
+        ORDER BY a.id, e.ip_address
+    ''')
+    for row in cursor.fetchall():
+        r = dict(row)
+        result.append({
+            'source': 'aliyun_eip',
+            'source_label': '阿里云EIP',
+            'account_id': r['account_id'],
+            'account_name': r['account_name'],
+            'ip_address': r['ip_address'],
+            'instance_id': r['instance_id'],
+            'instance_name': r['instance_name'] or '-',
+            'detail': f"带宽{r['bandwidth']}Mbps" if r['bandwidth'] else '-',
+            'region': r['region_id'],
+            'remark': '',
+            'id': None,
+        })
+
+    # 2. 阿里云SLB公网IP（仅internet类型，按账号汇总）
+    cursor.execute('''
+        SELECT a.id as account_id, a.name as account_name, s.address,
+               s.instance_id, s.instance_name, s.status, s.region_id
+        FROM slb_instances s
+        JOIN accounts a ON s.account_id = a.id
+        WHERE s.address_type = 'internet' AND s.address IS NOT NULL AND s.address != ''
+        ORDER BY a.id, s.address
+    ''')
+    for row in cursor.fetchall():
+        r = dict(row)
+        result.append({
+            'source': 'aliyun_slb',
+            'source_label': '阿里云SLB',
+            'account_id': r['account_id'],
+            'account_name': r['account_name'],
+            'ip_address': r['address'],
+            'instance_id': r['instance_id'],
+            'instance_name': r['instance_name'] or '-',
+            'detail': '',
+            'region': r['region_id'],
+            'remark': '',
+            'id': None,
+        })
+
+    # 3. 手动录入的公网IP
+    # 从数据库读取来源名称配置
+    label_rows = cursor.execute('SELECT source, label FROM source_labels').fetchall()
+    source_labels_map = {r['source']: r['label'] for r in label_rows} if label_rows else {'huawei': '华为云', 'idc': 'IDC', 'office': '居然大厦'}
+    cursor.execute('SELECT id, source, ip_address, remark, created_at FROM public_ips ORDER BY source, ip_address')
+    for row in cursor.fetchall():
+        r = dict(row)
+        result.append({
+            'source': r['source'],
+            'source_label': source_labels_map.get(r['source'], r['source']),
+            'account_id': None,
+            'account_name': '',
+            'ip_address': r['ip_address'],
+            'instance_id': '',
+            'instance_name': '',
+            'detail': '',
+            'region': '',
+            'remark': r['remark'] or '',
+            'id': r['id'],
+            'created_at': r['created_at'],
+        })
+
+    conn.close()
+    
+    # 去重：同一IP可能同时出现在EIP和SLB中，保留EIP（先添加的）
+    seen_ips = set()
+    deduped_result = []
+    for item in result:
+        ip = item['ip_address']
+        if ip and ip not in seen_ips:
+            seen_ips.add(ip)
+            deduped_result.append(item)
+        elif not ip:
+            deduped_result.append(item)
+    
+    return jsonify(deduped_result)
+
+
+@app.route('/api/public-ips', methods=['POST'])
+def api_add_public_ip():
+    """添加手动公网IP"""
+    data = request.json
+    source = data.get('source', '').strip()
+    ip_address = data.get('ip_address', '').strip()
+    remark = data.get('remark', '').strip()
+
+    if source not in ('huawei', 'idc', 'office'):
+        return jsonify({'error': '来源类型无效，支持: huawei/idc/office'}), 400
+    if not ip_address:
+        return jsonify({'error': '请填写IP地址'}), 400
+
+    try:
+        last_id = execute_db(
+            'INSERT INTO public_ips (source, ip_address, remark) VALUES (?, ?, ?)',
+            (source, ip_address, remark)
+        )
+        source_labels_map = {r['source']: r['label'] for r in query_db('SELECT source, label FROM source_labels')}
+        log_operation('公网大全', '添加IP', f'添加{source_labels_map.get(source, source)}公网IP：{ip_address}', account_name=source_labels_map.get(source, source))
+        return jsonify({'success': True, 'id': last_id, 'message': '添加成功'})
+    except Exception as e:
+        return jsonify({'error': f'添加失败: {str(e)}'}), 500
+
+
+@app.route('/api/public-ips/<int:ip_id>', methods=['PUT'])
+def api_update_public_ip(ip_id):
+    """更新手动公网IP"""
+    data = request.json
+    source = data.get('source', '').strip()
+    ip_address = data.get('ip_address', '').strip()
+    remark = data.get('remark', '').strip()
+
+    if source not in ('huawei', 'idc', 'office'):
+        return jsonify({'error': '来源类型无效'}), 400
+    if not ip_address:
+        return jsonify({'error': '请填写IP地址'}), 400
+
+    try:
+        execute_db(
+            'UPDATE public_ips SET source=?, ip_address=?, remark=?, updated_at=? WHERE id=?',
+            (source, ip_address, remark, datetime.now(), ip_id)
+        )
+        return jsonify({'success': True, 'message': '更新成功'})
+    except Exception as e:
+        return jsonify({'error': f'更新失败: {str(e)}'}), 500
+
+
+@app.route('/api/public-ips/<int:ip_id>', methods=['DELETE'])
+def api_delete_public_ip(ip_id):
+    """删除手动公网IP"""
+    try:
+        execute_db('DELETE FROM public_ips WHERE id = ?', (ip_id,))
+        return jsonify({'success': True, 'message': '删除成功'})
+    except Exception as e:
+        return jsonify({'error': f'删除失败: {str(e)}'}), 500
+
+
+@app.route('/api/public-ips/batch-import', methods=['POST'])
+def api_batch_import_public_ips():
+    """批量导入手动公网IP"""
+    data = request.json
+    items = data.get('items', [])
+    if not items:
+        return jsonify({'error': '没有可导入的数据'}), 400
+
+    source_labels_map = {r['source']: r['label'] for r in query_db('SELECT source, label FROM source_labels')}
+    success_count = 0
+    error_count = 0
+    errors = []
+
+    for i, item in enumerate(items):
+        source = (item.get('source') or '').strip()
+        ip_address = (item.get('ip_address') or '').strip()
+        remark = (item.get('remark') or '').strip()
+
+        if source not in ('huawei', 'idc', 'office'):
+            error_count += 1
+            errors.append(f'第{i+1}行: 来源类型无效({source})')
+            continue
+        if not ip_address:
+            error_count += 1
+            errors.append(f'第{i+1}行: IP地址为空')
+            continue
+
+        try:
+            execute_db(
+                'INSERT INTO public_ips (source, ip_address, remark) VALUES (?, ?, ?)',
+                (source, ip_address, remark)
+            )
+            success_count += 1
+        except Exception as e:
+            error_count += 1
+            errors.append(f'第{i+1}行: {str(e)}')
+
+    log_operation('公网大全', '批量导入', f'成功{success_count}条，失败{error_count}条', account_name='批量导入')
+    return jsonify({
+        'success': True,
+        'success_count': success_count,
+        'error_count': error_count,
+        'errors': errors[:10],
+        'message': f'导入完成：成功 {success_count} 条' + (f'，失败 {error_count} 条' if error_count else '')
+    })
 
 
 # ---------- 默认区域管理 ----------
