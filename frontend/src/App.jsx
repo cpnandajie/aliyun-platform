@@ -23,7 +23,7 @@ class ErrorBoundary extends Component {
       return (
         <div style={{ padding: 40, textAlign: 'center' }}>
           <h2 style={{ color: '#ef4444' }}>页面出错了</h2>
-          <p style={{ color: '#666', marginTop: 12 }}>{this.state.error?.message || '未知错误'}</p>
+          <p style={{ color: '#64748b', marginTop: 12 }}>{this.state.error?.message || '未知错误'}</p>
           <button
             className="btn-primary"
             style={{ marginTop: 16 }}
@@ -363,6 +363,25 @@ function useDebounceSearch(initialDelay = 300) {
   return { keyword, setKeyword, searchKeyword, resetSearch }
 }
 
+/**
+ * 确认弹框 Hook（封装 confirmState + showConfirm + ConfirmModal 渲染）
+ * 用法：const { showConfirm, confirmNode } = useConfirm()
+ *       const ok = await showConfirm('确定？')
+ *       渲染位置：{confirmNode}
+ */
+function useConfirm() {
+  const [confirmState, setConfirmState] = useState(null)
+  const showConfirm = (msg) => new Promise(resolve => setConfirmState({
+    msg,
+    onConfirm: () => { setConfirmState(null); resolve(true) },
+    onCancel: () => { setConfirmState(null); resolve(false) }
+  }))
+  const confirmNode = confirmState && (
+    <ConfirmModal message={confirmState.msg} onConfirm={confirmState.onConfirm} onCancel={confirmState.onCancel} />
+  )
+  return { showConfirm, confirmNode }
+}
+
 // ==================== 通用渲染工具 ====================
 
 const nowrap = v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span>
@@ -432,7 +451,7 @@ function ResourceOverview() {
           <div className="card-value">¥{fmtMoney(totalMonthAmount)}</div>
           <div className="card-label">本月消费</div>
         </div>
-        <div className="summary-card balance">
+        <div className="summary-card highlight">
           <div className="card-value">¥{fmtMoney(totalBalance)}</div>
           <div className="card-label">可用额度</div>
         </div>
@@ -533,7 +552,7 @@ function ResourceManagement() {
       { key: 'public_ip', label: '公网IP', sortable: true },
       { key: 'region_id', label: '区域', sortable: true, render: renderRegion },
       { key: 'renewal_price', label: '月续费', sortable: true, render: (v, row) => {
-        if (v !== null && v !== undefined) return <span style={{ color: '#e67e22', fontWeight: 500 }}>¥{fmtMoney(v)}</span>
+        if (v !== null && v !== undefined) return <span style={{ color: '#d97706', fontWeight: 500 }}>¥{fmtMoney(v)}</span>
         return <span style={{ color: '#94a3b8' }}>-</span>
       }},
     ],
@@ -558,7 +577,7 @@ function ResourceManagement() {
       }},
       { key: 'region_id', label: '区域', sortable: true, render: renderRegion },
       { key: 'renewal_price', label: '月续费', sortable: true, render: (v, row) => {
-        if (v !== null && v !== undefined) return <span style={{ color: '#e67e22', fontWeight: 500 }}>¥{fmtMoney(v)}</span>
+        if (v !== null && v !== undefined) return <span style={{ color: '#d97706', fontWeight: 500 }}>¥{fmtMoney(v)}</span>
         return <span style={{ color: '#94a3b8' }}>-</span>
       }},
     ],
@@ -591,7 +610,7 @@ function ResourceManagement() {
       { key: 'engine_version', label: '版本', sortable: true },
       { key: 'region_id', label: '区域', sortable: true, render: renderRegion },
       { key: 'renewal_price', label: '月续费', sortable: true, render: (v, row) => {
-        if (v !== null && v !== undefined) return <span style={{ color: '#e67e22', fontWeight: 500 }}>¥{fmtMoney(v)}</span>
+        if (v !== null && v !== undefined) return <span style={{ color: '#d97706', fontWeight: 500 }}>¥{fmtMoney(v)}</span>
         return <span style={{ color: '#94a3b8' }}>-</span>
       }},
     ],
@@ -841,10 +860,7 @@ function PublicIPManagement() {
   const [editingIP, setEditingIP] = useState(null)
   const [formData, setFormData] = useState({ source: 'huawei', ip_address: '', remark: '' })
   const { sortKey, sortDir, handleSort, sortArrow, sortData } = useSortable()
-  const [confirmState, setConfirmState] = useState(null)
-  const showConfirm = (msg) => new Promise(resolve => {
-    setConfirmState({ msg, onConfirm: () => { resolve(true); setConfirmState(null) }, onCancel: () => { resolve(false); setConfirmState(null) } })
-  })
+  const { showConfirm, confirmNode } = useConfirm()
   // 导入相关
   const importFileRef = useRef(null)
   const [importData, setImportData] = useState(null) // { items: [...], fileName: '' }
@@ -1099,6 +1115,17 @@ function PublicIPManagement() {
         </div>
       </div>
 
+      {/* 搜索框 */}
+      <div className="search-bar" style={{ marginBottom: 12 }}>
+        <select value={accountFilter} onChange={e => setAccountFilter(e.target.value)}>
+          <option value="">全部账号</option>
+          {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+        </select>
+        <input type="text" value={keyword} onChange={e => setKeyword(e.target.value)}
+          placeholder="搜索IP/账号/实例/备注" />
+        <button className="btn-default" onClick={handleReset}>重置</button>
+      </div>
+
       {/* 统计卡片 */}
       <div className="resource-tabs" style={{ marginBottom: 18 }}>
         {[
@@ -1114,17 +1141,6 @@ function PublicIPManagement() {
             <span style={{ fontSize: 12, background: sourceFilter === item.key ? 'rgba(99,102,241,0.1)' : '#f1f5f9', color: sourceFilter === item.key ? '#6366f1' : '#94a3b8', padding: '2px 8px', borderRadius: 10, fontWeight: 600 }}>{item.count}</span>
           </div>
         ))}
-      </div>
-
-      {/* 搜索框 */}
-      <div className="search-bar" style={{ marginBottom: 12 }}>
-        <select value={accountFilter} onChange={e => setAccountFilter(e.target.value)}>
-          <option value="">全部账号</option>
-          {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-        </select>
-        <input type="text" value={keyword} onChange={e => setKeyword(e.target.value)}
-          placeholder="搜索IP/账号/实例/备注" />
-        <button className="btn-default" onClick={handleReset}>重置</button>
       </div>
 
       {/* 添加/编辑表单 */}
@@ -1216,13 +1232,7 @@ function PublicIPManagement() {
           </table>
         </div>
       )}
-      {confirmState && (
-        <ConfirmModal
-          message={confirmState.msg}
-          onConfirm={confirmState.onConfirm}
-          onCancel={confirmState.onCancel}
-        />
-      )}
+      {confirmNode}
       {showLabelSettings && (
         <div className="modal-overlay">
           <div className="modal-box" style={{ width: 460, textAlign: 'left' }}>
@@ -1327,8 +1337,7 @@ function BillManagement() {
   const [hideZeroBills, setHideZeroBills] = useState(false)
   const [historySyncing, setHistorySyncing] = useState(false)
   const [historyStartMonth, setHistoryStartMonth] = useState('2026-01')
-  const [confirmState, setConfirmState] = useState(null)
-  const showConfirm = (msg) => new Promise(resolve => setConfirmState({ msg, onConfirm: () => { setConfirmState(null); resolve(true) }, onCancel: () => { setConfirmState(null); resolve(false) } }))
+  const { showConfirm, confirmNode } = useConfirm()
 
   // 同步历史账单
   const syncHistoryBills = async () => {
@@ -1582,13 +1591,13 @@ function BillManagement() {
           <div className="card-value">¥{fmtMoney(totalAmount)}</div>
           <div className="card-trend">环比上月 {renderComparison(totalAmount, prevMonthData.total)}</div>
         </div>
-        <div className="summary-card highlight">
+        <div className="summary-card highlight success">
           <div className="card-label">{billingCycle} 已还款总额</div>
-          <div className="card-value" style={{ color: '#10b981' }}>¥{fmtMoney(totalPaid)}</div>
+          <div className="card-value">¥{fmtMoney(totalPaid)}</div>
         </div>
-        <div className="summary-card highlight">
+        <div className="summary-card warning">
           <div className="card-label">{billingCycle} 待还款总额</div>
-          <div className="card-value" style={{ color: '#10b981' }}>¥{fmtMoney(totalUnpaid)}</div>
+          <div className="card-value">¥{fmtMoney(totalUnpaid)}</div>
         </div>
       </div>
 
@@ -1765,13 +1774,13 @@ function BillManagement() {
           <div className="card-label">{yearlyYear}年消费总额</div>
           <div className="card-value">¥{fmtMoney(yearlyData.total_yearly)}</div>
         </div>
-        <div className="summary-card highlight">
+        <div className="summary-card highlight success">
           <div className="card-label">{yearlyYear}年已还款总额</div>
-          <div className="card-value" style={{ color: '#10b981' }}>¥{fmtMoney(yearlyData.total_yearly_paid || 0)}</div>
+          <div className="card-value">¥{fmtMoney(yearlyData.total_yearly_paid || 0)}</div>
         </div>
-        <div className="summary-card highlight">
+        <div className="summary-card warning">
           <div className="card-label">{yearlyYear}年待还款总额</div>
-          <div className="card-value" style={{ color: '#10b981' }}>¥{fmtMoney(yearlyData.total_yearly_unpaid || 0)}</div>
+          <div className="card-value">¥{fmtMoney(yearlyData.total_yearly_unpaid || 0)}</div>
         </div>
       </div>
 
@@ -1858,12 +1867,16 @@ function BillManagement() {
       </>
       )}
       {/* 颜色说明 */}
-      <div style={{ marginTop: 16, padding: '10px 16px', background: '#f8fafc', borderRadius: 8, fontSize: 13, color: '#64748b', display: 'flex', gap: 24, alignItems: 'center' }}>
-        <span>金额颜色说明：</span>
-        <span><span style={{ color: '#10b981', fontWeight: 500 }}>绿色</span> = 待还款为0，已全部还清</span>
-        <span><span style={{ color: '#0f172a', fontWeight: 500 }}>黑色</span> = 仍有待还款金额</span>
+      <div style={{ marginTop: 16, padding: '10px 16px', background: '#f8fafc', borderRadius: 8, fontSize: 13, color: '#64748b', display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span>金额颜色：</span>
+        <span><span style={{ color: '#10b981', fontWeight: 500 }}>绿色</span> = 已全部还清</span>
+        <span><span style={{ color: '#0f172a', fontWeight: 500 }}>黑色</span> = 仍有待还款</span>
+        <span style={{ marginLeft: 16 }}>环比上月：</span>
+        <span><span style={{ color: '#ef4444', fontWeight: 500 }}>红色↑</span> = 消费上涨</span>
+        <span><span style={{ color: '#10b981', fontWeight: 500 }}>绿色↓</span> = 消费下降</span>
+        <span><span style={{ color: '#94a3b8', fontWeight: 500 }}>灰色—</span> = 消费持平</span>
       </div>
-      {confirmState && <ConfirmModal message={confirmState.msg} onConfirm={confirmState.onConfirm} onCancel={confirmState.onCancel} />}
+      {confirmNode}
     </div>
   )
 }
@@ -1936,8 +1949,7 @@ function AccountManagement() {
   // 顶部同步下拉菜单
   const [showTopDropdown, setShowTopDropdown] = useState(false)
   // 确认弹框
-  const [confirmState, setConfirmState] = useState(null)
-  const showConfirm = (msg) => new Promise(resolve => setConfirmState({ msg, onConfirm: () => { setConfirmState(null); resolve(true) }, onCancel: () => { setConfirmState(null); resolve(false) } }))
+  const { showConfirm, confirmNode } = useConfirm()
 
   useEffect(() => {
     if (!showTopDropdown) return
@@ -2417,13 +2429,7 @@ function AccountManagement() {
           </div>
         )}
       </div>
-      {confirmState && (
-        <ConfirmModal
-          message={confirmState.msg}
-          onConfirm={confirmState.onConfirm}
-          onCancel={confirmState.onCancel}
-        />
-      )}
+      {confirmNode}
     </div>
   )
 }
@@ -2460,8 +2466,7 @@ function RamManagement() {
   // 当前操作的用户所属账号
   const [currentUserAccountId, setCurrentUserAccountId] = useState(null)
   // 确认弹框
-  const [confirmState, setConfirmState] = useState(null)
-  const showConfirm = (msg) => new Promise(resolve => setConfirmState({ msg, onConfirm: () => { setConfirmState(null); resolve(true) }, onCancel: () => { setConfirmState(null); resolve(false) } }))
+  const { showConfirm, confirmNode } = useConfirm()
 
   const filteredUsers = ramUsers.filter(u => {
     if (!userKeyword.trim()) return true
@@ -3015,9 +3020,7 @@ function RamManagement() {
           </div>
         </div>
       )}
-      {confirmState && (
-        <ConfirmModal message={confirmState.msg} onConfirm={confirmState.onConfirm} onCancel={confirmState.onCancel} />
-      )}
+      {confirmNode}
     </div>
   )
 }
@@ -3042,8 +3045,7 @@ function DnsManagement() {
   const RECORD_PAGE_SIZE = 20
   const [domainSort, setDomainSort] = useState({ field: 'end_time', order: 'asc' })
   // 确认弹框
-  const [confirmState, setConfirmState] = useState(null)
-  const showConfirm = (msg) => new Promise(resolve => setConfirmState({ msg, onConfirm: () => { setConfirmState(null); resolve(true) }, onCancel: () => { setConfirmState(null); resolve(false) } }))
+  const { showConfirm, confirmNode } = useConfirm()
 
   const filteredDomains = domains.filter(d => {
     const kw = domainKeyword.trim().toLowerCase()
@@ -3323,11 +3325,11 @@ function DnsManagement() {
                   <tr key={`${d.account_id || ''}-${d.domain_name}`}
                     style={{ cursor: 'pointer', background: selectedDomain === d.domain_name ? '#eef2ff' : 'transparent' }}
                     onClick={() => setSelectedDomain(d.domain_name)}>
-                    {selectedAccount === 'all' && <td style={{ color: '#666' }}>{d.account_name}</td>}
+                    {selectedAccount === 'all' && <td style={{ color: '#64748b' }}>{d.account_name}</td>}
                     <td>{d.domain_name}</td>
-                    <td style={{ color: '#555' }}>{d.holder || '-'}</td>
+                    <td style={{ color: '#64748b' }}>{d.holder || '-'}</td>
                     <td>{d.record_count}</td>
-                    <td className="td-mono" style={{ color: d.end_time && (() => { const s=String(d.end_time).trim(); const ts=/^\d{10,13}$/.test(s)?(s.length===10?Number(s)*1000:Number(s)):new Date(s).getTime(); return !isNaN(ts)&&ts<Date.now() })() ? '#ef4444' : '#333' }}>
+                    <td className="td-mono" style={{ color: d.end_time && (() => { const s=String(d.end_time).trim(); const ts=/^\d{10,13}$/.test(s)?(s.length===10?Number(s)*1000:Number(s)):new Date(s).getTime(); return !isNaN(ts)&&ts<Date.now() })() ? '#ef4444' : '#334155' }}>
                       {fmtDate(d.end_time)}
                     </td>
                     <td>{getDomainStatusTag(d)}</td>
@@ -3521,9 +3523,7 @@ function DnsManagement() {
           </div>
         </div>
       )}
-      {confirmState && (
-        <ConfirmModal message={confirmState.msg} onConfirm={confirmState.onConfirm} onCancel={confirmState.onCancel} />
-      )}
+      {confirmNode}
     </div>
   )
 }
@@ -3867,11 +3867,11 @@ function CloudMonitor() {
   }
 
   const getStatusColor = (value) => {
-    if (value === null) return '#999'
+    if (value === null) return '#94a3b8'
     const num = parseFloat(value)
-    if (num >= 90) return '#ff4d4f'
-    if (num >= 70) return '#fa8c16'
-    return '#52c41a'
+    if (num >= 90) return '#ef4444'
+    if (num >= 70) return '#f59e0b'
+    return '#10b981'
   }
 
   const METRIC_CARDS = [
@@ -4121,11 +4121,11 @@ function CloudMonitor() {
 
       {/* 当前告警资源 */}
       <div className="section-block">
-        <h3 style={{ color: filteredActiveAlarms.length > 0 ? '#ff4d4f' : '#333' }}>
+        <h3 style={{ color: filteredActiveAlarms.length > 0 ? '#ef4444' : '#334155' }}>
           当前告警（{filteredActiveAlarms.length}{filteredActiveAlarms.length !== activeAlarms.length ? `/${activeAlarms.length}` : ''} 个）
         </h3>
         {activeAlarms.length === 0 ? (
-          <div className="empty-state" style={{ color: '#52c41a' }}>暂无活跃告警</div>
+          <div className="empty-state" style={{ color: '#10b981' }}>暂无活跃告警</div>
         ) : filteredActiveAlarms.length === 0 ? (
           <div className="empty-state">未找到匹配"{monitorKeyword}"的告警</div>
         ) : (
@@ -4553,8 +4553,7 @@ function LogManagement() {
   const [dateFrom, setDateFrom] = useState(today)
   const [dateTo, setDateTo] = useState(today)
   // 确认弹框
-  const [confirmState, setConfirmState] = useState(null)
-  const showConfirm = (msg) => new Promise(resolve => setConfirmState({ msg, onConfirm: () => { setConfirmState(null); resolve(true) }, onCancel: () => { setConfirmState(null); resolve(false) } }))
+  const { showConfirm, confirmNode } = useConfirm()
 
   const loadLogs = (p = 1) => {
     setLoading(true)
@@ -4688,9 +4687,7 @@ function LogManagement() {
           <button className="btn-default" disabled={page >= totalPages || loading} onClick={() => loadLogs(page + 1)}>下一页</button>
         </div>
       )}
-      {confirmState && (
-        <ConfirmModal message={confirmState.msg} onConfirm={confirmState.onConfirm} onCancel={confirmState.onCancel} />
-      )}
+      {confirmNode}
     </div>
   )
 }

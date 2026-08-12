@@ -1685,10 +1685,11 @@ def _compute_details_summary(bill_items):
         detail = d.get('product_detail') or d.get('product_type') or '-'
         key = f'{code}__{detail}'
         if key not in merged:
-            merged[key] = {'after_tax_amount': 0, 'cash_amount': 0, 'deduct_amount': 0}
+            merged[key] = {'after_tax_amount': 0, 'cash_amount': 0, 'deduct_amount': 0, 'outstanding_amount': 0}
         merged[key]['after_tax_amount'] += float(d.get('after_tax_amount') or d.get('pretax_amount') or 0)
         merged[key]['cash_amount'] += float(d.get('cash_amount') or 0)
         merged[key]['deduct_amount'] += float(d.get('deduct_amount') or 0)
+        merged[key]['outstanding_amount'] += float(d.get('outstanding_amount') or 0)
     return merged
 
 
@@ -1783,6 +1784,8 @@ def sync_bill(account_id, access_key_id, access_key_secret):
                     tax = float(str(getattr(item, 'tax_amount', 0) or 0).replace(',', '') or 0)
                     cash_amount = float(str(getattr(item, 'cash_amount', 0) or 0).replace(',', '') or 0)
                     deduct_amount = float(str(getattr(item, 'deduct_amount', 0) or 0).replace(',', '') or 0)
+                    # 未结清金额（待还款）
+                    outstanding_amount = float(str(getattr(item, 'outstanding_amount', 0) or 0).replace(',', '') or 0)
                     
                     # 优先使用 AfterTaxAmount（税后金额）
                     after_tax_raw = getattr(item, 'after_tax_amount', None)
@@ -1805,6 +1808,7 @@ def sync_bill(account_id, access_key_id, access_key_secret):
                         'tax_amount': tax,
                         'after_tax_amount': after_tax_amount,
                         'cash_amount': cash_amount,
+                        'outstanding_amount': outstanding_amount,
                         'owner_id': getattr(item, 'owner_id', ''),
                     }
                     bill_items.append(item_dict)
@@ -2757,6 +2761,8 @@ def _run_history_bills_sync(task_id, account_id, acct_name, ak, sk, start_month)
                         tax = float(str(getattr(item, 'tax_amount', 0) or 0).replace(',', '') or 0)
                         cash_amount = float(str(getattr(item, 'cash_amount', 0) or 0).replace(',', '') or 0)
                         deduct_amount = float(str(getattr(item, 'deduct_amount', 0) or 0).replace(',', '') or 0)
+                        # 未结清金额（待还款）
+                        outstanding_amount = float(str(getattr(item, 'outstanding_amount', 0) or 0).replace(',', '') or 0)
                         
                         # 优先使用 AfterTaxAmount（税后金额）
                         after_tax_raw = getattr(item, 'after_tax_amount', None)
@@ -2779,6 +2785,7 @@ def _run_history_bills_sync(task_id, account_id, acct_name, ak, sk, start_month)
                             'tax_amount': tax,
                             'after_tax_amount': after_tax_amount,
                             'cash_amount': cash_amount,
+                            'outstanding_amount': outstanding_amount,
                             'owner_id': getattr(item, 'owner_id', ''),
                         }
                         bill_items.append(item_dict)
@@ -3301,11 +3308,15 @@ def api_get_bills():
                 total_details_size += len(details)
             except (json.JSONDecodeError, TypeError):
                 details = []
-            paid = sum(max(0, float(d.get('cash_amount', 0) or 0)) for d in details)
+            # 待还款 = outstanding_amount（未结清金额）
+            unpaid = sum(max(0, float(d.get('outstanding_amount', 0) or 0)) for d in details)
+            # 已还款 = 应付总额 - 待还款
+            paid = bill['total_amount'] - unpaid
             summary = _compute_details_summary(details)
         else:
-            # 从 summary 反推 paid_amount
-            paid = sum(v.get('cash_amount', 0) for v in summary.values())
+            # 从 summary 反推（优先使用 outstanding_amount）
+            unpaid = sum(max(0, v.get('outstanding_amount', 0)) for v in summary.values())
+            paid = bill['total_amount'] - unpaid
         
         bill['paid_amount'] = round(paid, 2)
         bill['unpaid_amount'] = round(bill['total_amount'] - paid, 2)
@@ -3411,27 +3422,32 @@ def api_get_yearly_bills():
         WHERE mb.billing_cycle LIKE ?
     ''', (f'{year}-%',))
     paid_by_account = {}
+    unpaid_by_account = {}
     for row in cursor.fetchall():
         aid = row['account_id']
         if aid not in paid_by_account:
             paid_by_account[aid] = 0
+            unpaid_by_account[aid] = 0
         if row['details_summary']:
             try:
                 summary = json.loads(row['details_summary'])
-                paid_by_account[aid] += sum(v.get('cash_amount', 0) for v in summary.values())
+                # 待还款 = outstanding_amount（未结清金额）
+                unpaid_by_account[aid] += sum(max(0, v.get('outstanding_amount', 0)) for v in summary.values())
             except (json.JSONDecodeError, TypeError):
                 pass
         elif row['details']:
             # 回退：解析完整 details
             try:
                 details = json.loads(row['details'])
-                paid_by_account[aid] += sum(max(0, float(d.get('cash_amount', 0) or 0)) for d in details)
+                # 待还款 = outstanding_amount（未结清金额）
+                unpaid_by_account[aid] += sum(max(0, float(d.get('outstanding_amount', 0) or 0)) for d in details)
             except (json.JSONDecodeError, TypeError):
                 pass
     for item in yearly_bills:
-        paid = round(paid_by_account.get(item['account_id'], 0), 2)
+        unpaid = round(unpaid_by_account.get(item['account_id'], 0), 2)
+        paid = round(item['yearly_amount'] - unpaid, 2)
         item['yearly_paid'] = paid
-        item['yearly_unpaid'] = round(item['yearly_amount'] - paid, 2)
+        item['yearly_unpaid'] = unpaid
 
     # 获取所有年份
     cursor.execute('SELECT DISTINCT substr(billing_cycle, 1, 4) as year FROM monthly_bills ORDER BY year DESC')

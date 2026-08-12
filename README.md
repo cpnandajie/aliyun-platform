@@ -1,6 +1,6 @@
 # 阿里云资源与账单管理平台
 
-一站式阿里云多账号资源管理、账单分析、域名管理、RAM 用户管理、SSL 证书管理和云监控平台。
+一站式阿里云多账号资源管理、账单分析、公网 IP 管理、域名管理、RAM 用户管理、SSL 证书管理和云监控平台。
 
 ## 功能模块
 
@@ -23,10 +23,24 @@
 - 数据同步（全量同步/仅资源/仅账单）
 
 ### 账单管理
-- 月度账单查询
-- 历史账单对比
-- 按账号筛选
-- 消费趋势分析
+- 月度账单查询（支持切换月份）
+- 各账号账单：消费总额、已还款金额、待还款金额
+- 汇总卡片：消费总额、已还款总额、待还款总额（三栏显示）
+- 环比上月对比（涨跌百分比）
+- 年度汇总：按年统计各账号消费、已还款、待还款
+- 月度消费趋势图表（柱状图）
+- 账单明细按需查看（点击展开）
+- 历史账单同步（支持多月份批量同步）
+- 金额颜色说明：绿色=已还清，黑色=有待还款
+
+### 公网大全
+- 阿里云 EIP、SLB 公网 IP 自动汇总
+- 手动录入公网 IP（华为云、IDC、其他）
+- 按来源分类筛选（全部/阿里云/华为云/IDC等）
+- IP 搜索（支持 IP、账号、实例、备注）
+- 导出 Excel / 导入 Excel
+- 来源标签自定义设置
+- 自动去重（EIP 与 SLB 相同 IP 只保留一条）
 
 ### 账号管理
 - 多账号 AccessKey 管理
@@ -84,6 +98,7 @@
 - **APScheduler** - 定时任务调度
 - **阿里云 SDK** - 资源同步与操作
   - ECS、RDS、SLB、Redis、OSS
+  - VPC（弹性公网 IP、NAT 网关）
   - BSS（账单）
   - RAM（访问控制）
   - DNS（域名解析）
@@ -194,11 +209,14 @@ aliyun-platform/
 │   │   ├── App.jsx        # React 主组件
 │   │   ├── App.css        # 全局样式
 │   │   └── main.jsx       # 入口文件
+│   ├── public/            # 静态资源
 │   ├── index.html
 │   ├── package.json
 │   └── vite.config.js
+├── images/                # 截图资源
 ├── start.bat              # Windows 一键部署脚本
-└── start.sh               # Linux/Mac 一键部署脚本
+├── start.sh               # Linux/Mac 一键部署脚本
+└── .gitignore
 ```
 
 ## 数据库
@@ -212,8 +230,14 @@ aliyun-platform/
 - `slb_instances` - SLB 实例
 - `redis_instances` - Redis 实例
 - `oss_buckets` - OSS Bucket
-- `monthly_bills` - 月度账单
+- `vpc_instances` - VPC 实例
+- `vswitch_instances` - 交换机实例
+- `eip_instances` - 弹性公网 IP
+- `nat_instances` - NAT 网关实例
+- `monthly_bills` - 月度账单（含已还款/待还款汇总）
 - `account_balance` - 账号余额
+- `public_ips` - 手动录入公网 IP
+- `source_labels` - 来源标签配置
 - `operation_logs` - 操作日志
 - `auto_sync_config` - 自动同步配置
 

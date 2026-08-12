@@ -257,11 +257,20 @@ body {
 }
 
 .summary-card.highlight {
-  border-left: 3px solid #10b981;
-  background: linear-gradient(135deg, rgba(255,255,255,0.9), rgba(16,185,129,0.04));
+  border-left: 3px solid #6366f1;
+  background: linear-gradient(135deg, rgba(255,255,255,0.9), rgba(99,102,241,0.04));
 }
 
 .summary-card.highlight .card-value {
+  color: #6366f1;
+}
+
+.summary-card.highlight.success {
+  border-left-color: #10b981;
+  background: linear-gradient(135deg, rgba(255,255,255,0.9), rgba(16,185,129,0.04));
+}
+
+.summary-card.highlight.success .card-value {
   color: #10b981;
 }
 
@@ -281,6 +290,15 @@ body {
 
 .summary-card.balance.low .card-value {
   color: #ef4444;
+}
+
+.summary-card.warning {
+  border-left: 3px solid #d97706;
+  background: linear-gradient(135deg, rgba(255,255,255,0.9), rgba(217,119,6,0.04));
+}
+
+.summary-card.warning .card-value {
+  color: #d97706;
 }
 
 /* ==================== 区块 ==================== */
