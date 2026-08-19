@@ -1,10 +1,63 @@
 import { useState, useEffect, useCallback, useMemo, Fragment, Component, createContext, useContext, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate, useLocation } from 'react-router-dom'
 import axios from 'axios'
 import './App.css'
 
 // 设置 axios 默认超时：同步操作可能耗时较长，请设置 10 分钟
 axios.defaults.timeout = 600000
+
+// ==================== 年月选择弹窗（通用组件）====================
+function MonthPickerModal({ open, onClose, title, year, onYearChange, value, onChange, statusText, onConfirm, confirmLabel }) {
+  if (!open) return null
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" style={{ maxWidth: 360 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h3>{title}</h3>
+          <button className="modal-close" onClick={onClose}>&times;</button>
+        </div>
+        <div className="modal-body" style={{ padding: '20px 24px' }}>
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'block', marginBottom: 8, fontSize: 14, color: '#334155' }}>选择月份</label>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, marginBottom: 12 }}>
+              <button type="button" style={{ padding: '4px 12px', fontSize: 18, background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 6, cursor: 'pointer', color: '#334155', lineHeight: 1 }} onClick={() => onYearChange(year - 1)}>‹</button>
+              <span style={{ fontSize: 16, fontWeight: 600, color: '#0f172a', minWidth: 60, textAlign: 'center' }}>{year}年</span>
+              <button type="button" style={{ padding: '4px 12px', fontSize: 18, background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 6, cursor: 'pointer', color: '#334155', lineHeight: 1 }} onClick={() => onYearChange(year + 1)}>›</button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
+              {[1,2,3,4,5,6,7,8,9,10,11,12].map(m => {
+                const val = `${year}-${String(m).padStart(2, '0')}`
+                const selected = value === val
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => onChange(selected ? '' : val)}
+                    style={{
+                      padding: '8px 0', borderRadius: 8, fontSize: 14, cursor: 'pointer', transition: 'all 0.15s',
+                      border: selected ? '2px solid #6366f1' : '1px solid #e2e8f0',
+                      background: selected ? '#eef2ff' : '#fff',
+                      color: selected ? '#6366f1' : '#334155',
+                      fontWeight: selected ? 600 : 400
+                    }}
+                  >{m}月</button>
+                )
+              })}
+            </div>
+          </div>
+          <div style={{ fontSize: 13, color: '#64748b', marginBottom: 20, textAlign: 'center' }}>
+            {statusText}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <button className="btn-default" onClick={onClose}>取消</button>
+            <button className="btn-primary" onClick={onConfirm}>{confirmLabel || '确定'}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 // ==================== 错误边界 ====================
 class ErrorBoundary extends Component {
@@ -1337,6 +1390,14 @@ function BillManagement() {
   const [hideZeroBills, setHideZeroBills] = useState(false)
   const [historySyncing, setHistorySyncing] = useState(false)
   const [historyStartMonth, setHistoryStartMonth] = useState('2026-01')
+  const [historyMonthPickerOpen, setHistoryMonthPickerOpen] = useState(false)
+  const [historyPickerYear, setHistoryPickerYear] = useState(() => new Date().getFullYear())
+  const [historyPickerTemp, setHistoryPickerTemp] = useState('')
+  const historyMonthPickerRef = useRef(null)
+  const [cyclePickerOpen, setCyclePickerOpen] = useState(false)
+  const [cyclePickerYear, setCyclePickerYear] = useState(() => new Date().getFullYear())
+  const [cyclePickerTemp, setCyclePickerTemp] = useState('')
+  const cyclePickerRef = useRef(null)
   const { showConfirm, confirmNode } = useConfirm()
 
   // 同步历史账单
@@ -1389,6 +1450,30 @@ function BillManagement() {
       setHistorySyncing(false)
     }
   }
+
+  // 点击外部关闭月份选择器
+  useEffect(() => {
+    if (!historyMonthPickerOpen) return
+    const handleClick = (e) => {
+      if (historyMonthPickerRef.current && !historyMonthPickerRef.current.contains(e.target)) {
+        setHistoryMonthPickerOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [historyMonthPickerOpen])
+
+  // 点击外部关闭账单月份选择器
+  useEffect(() => {
+    if (!cyclePickerOpen) return
+    const handleClick = (e) => {
+      if (cyclePickerRef.current && !cyclePickerRef.current.contains(e.target)) {
+        setCyclePickerOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [cyclePickerOpen])
 
   const loadData = useCallback((cycle) => {
     setLoading(true)
@@ -1545,28 +1630,43 @@ function BillManagement() {
 
       {!yearlyView ? (
       <>
-      {/* 账单月份选择 */}
+      {/* 账单月份查询 */}
       <div className="section-block">
         <div className="search-bar" style={{ marginBottom: 12 }}>
           <label>账单月份：</label>
-          <input
-            type="month"
-            value={billingCycle}
-            onChange={e => handleCycleChange(e.target.value)}
-          />
+          <button
+            type="button"
+            className="btn-default"
+            style={{ minWidth: 90, textAlign: 'left' }}
+            onClick={() => {
+              setCyclePickerTemp(billingCycle)
+              if (billingCycle) {
+                const [y] = billingCycle.split('-')
+                setCyclePickerYear(parseInt(y))
+              }
+              setCyclePickerOpen(true)
+            }}
+          >{billingCycle || '选择月份'}</button>
           <button className="btn-primary" onClick={() => loadData()} disabled={loading}>
             {loading ? '查询中..' : '查询'}
           </button>
-          <button className="btn-default" onClick={() => syncHistoryBills()} disabled={historySyncing}>
+          <button className="btn-default" onClick={() => syncHistoryBills()} disabled={historySyncing} style={{ marginLeft: 'auto' }}>
             {historySyncing ? '同步中...' : '同步历史账单'}
           </button>
           <label style={{ marginLeft: '12px' }}>从：</label>
-          <input
-            type="month"
-            value={historyStartMonth}
-            onChange={e => setHistoryStartMonth(e.target.value)}
-            style={{ width: 'auto' }}
-          />
+          <button
+            type="button"
+            className="btn-default"
+            style={{ minWidth: 90, textAlign: 'left' }}
+            onClick={() => {
+              setHistoryPickerTemp(historyStartMonth)
+              if (historyStartMonth) {
+                const [y] = historyStartMonth.split('-')
+                setHistoryPickerYear(parseInt(y))
+              }
+              setHistoryMonthPickerOpen(true)
+            }}
+          >{historyStartMonth || '选择月份'}</button>
           <span style={{ color: '#64748b', fontSize: 13 }}>开始同步</span>
         </div>
         {availableCycles.length > 0 && (
@@ -1867,15 +1967,48 @@ function BillManagement() {
       </>
       )}
       {/* 颜色说明 */}
-      <div style={{ marginTop: 16, padding: '10px 16px', background: '#f8fafc', borderRadius: 8, fontSize: 13, color: '#64748b', display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ marginTop: 16, padding: '10px 16px', background: '#f8fafc', borderRadius: 8, fontSize: 13, color: '#64748b', lineHeight: 2 }}>
         <span>金额颜色：</span>
-        <span><span style={{ color: '#10b981', fontWeight: 500 }}>绿色</span> = 已全部还清</span>
-        <span><span style={{ color: '#0f172a', fontWeight: 500 }}>黑色</span> = 仍有待还款</span>
-        <span style={{ marginLeft: 16 }}>环比上月：</span>
-        <span><span style={{ color: '#ef4444', fontWeight: 500 }}>红色↑</span> = 消费上涨</span>
-        <span><span style={{ color: '#10b981', fontWeight: 500 }}>绿色↓</span> = 消费下降</span>
+        <span style={{ marginRight: 12 }}><span style={{ color: '#10b981', fontWeight: 500 }}>绿色</span> = 已全部还清</span>
+        <span style={{ marginRight: 24 }}><span style={{ color: '#0f172a', fontWeight: 500 }}>黑色</span> = 仍有待还款</span>
+        <span>环比上月：</span>
+        <span style={{ marginRight: 12 }}><span style={{ color: '#ef4444', fontWeight: 500 }}>红色↑</span> = 消费上涨</span>
+        <span style={{ marginRight: 12 }}><span style={{ color: '#10b981', fontWeight: 500 }}>绿色↓</span> = 消费下降</span>
         <span><span style={{ color: '#94a3b8', fontWeight: 500 }}>灰色—</span> = 消费持平</span>
       </div>
+
+      {/* 账单月份选择弹窗 */}
+      <MonthPickerModal
+        open={cyclePickerOpen}
+        onClose={() => setCyclePickerOpen(false)}
+        title="选择账单月份"
+        year={cyclePickerYear}
+        onYearChange={setCyclePickerYear}
+        value={cyclePickerTemp}
+        onChange={setCyclePickerTemp}
+        statusText={cyclePickerTemp ? `已选：${cyclePickerTemp}` : '未选择月份'}
+        onConfirm={() => {
+          if (cyclePickerTemp) handleCycleChange(cyclePickerTemp)
+          setCyclePickerOpen(false)
+        }}
+      />
+
+      {/* 历史账单起始月份选择弹窗 */}
+      <MonthPickerModal
+        open={historyMonthPickerOpen}
+        onClose={() => setHistoryMonthPickerOpen(false)}
+        title="选择同步起始月份"
+        year={historyPickerYear}
+        onYearChange={setHistoryPickerYear}
+        value={historyPickerTemp}
+        onChange={setHistoryPickerTemp}
+        statusText={historyPickerTemp ? `已选：${historyPickerTemp}` : '未选择月份'}
+        onConfirm={() => {
+          setHistoryStartMonth(historyPickerTemp)
+          setHistoryMonthPickerOpen(false)
+        }}
+      />
+
       {confirmNode}
     </div>
   )
@@ -1896,6 +2029,10 @@ function AccountManagement() {
   const [showForm, setShowForm] = useState(false)
   const [editingAccount, setEditingAccount] = useState(null)
   const [formData, setFormData] = useState({ name: '', access_key_id: '', access_key_secret: '', remark: '', balance_threshold: 20000, currency: 'CNY' })
+  // 账单同步月份选择
+  const [billSyncDialog, setBillSyncDialog] = useState(null) // { accountId, accountName }
+  const [billSyncMonth, setBillSyncMonth] = useState('')
+  const [billSyncYear, setBillSyncYear] = useState(() => new Date().getFullYear())
   // 账号表格排序
   const [acctSortKey, setAcctSortKey] = useState('')
   const [acctSortDir, setAcctSortDir] = useState('asc')
@@ -2132,15 +2269,18 @@ function AccountManagement() {
     poll()
   }
 
-  const handleSync = (accountId, syncType = 'all') => {
+  const handleSync = (accountId, syncType = 'all', billingMonth = null) => {
     const typeLabel = { all: '全部', resources: '资源', bills: '账单' }[syncType]
     setSyncingIds(prev => ({ ...prev, [accountId]: true }))
     // 保存到 localStorage
     const savedIds = JSON.parse(localStorage.getItem('syncingIds') || '{}')
     savedIds[accountId] = true
     localStorage.setItem('syncingIds', JSON.stringify(savedIds))
-    toast.info(`正在同步${typeLabel}...`)
-    axios.post(`/api/accounts/${accountId}/sync`, { sync_type: syncType })
+    const monthHint = billingMonth ? `（${billingMonth}）` : ''
+    toast.info(`正在同步${typeLabel}${monthHint}...`)
+    const payload = { sync_type: syncType }
+    if (billingMonth) payload.billing_month = billingMonth
+    axios.post(`/api/accounts/${accountId}/sync`, payload)
       .then(res => {
         if (res.data.task_id) {
           // 保存 task_id 到 localStorage
@@ -2418,7 +2558,7 @@ function AccountManagement() {
                         {syncingIds[acct.id] ? '同步中..' : '同步全部'}
                       </button>
                       <button className="btn-link" onClick={() => handleSync(acct.id, 'resources')} disabled={syncingIds[acct.id]}>同步资源</button>
-                      <button className="btn-link" onClick={() => handleSync(acct.id, 'bills')} disabled={syncingIds[acct.id]}>同步账单</button>
+                      <button className="btn-link" onClick={() => { setBillSyncDialog({ accountId: acct.id, accountName: acct.name }); setBillSyncMonth('') }} disabled={syncingIds[acct.id]}>同步账单</button>
                       <button className="btn-link" onClick={() => handleEditAccount(acct)}>编辑</button>
                       <button className="btn-link btn-danger-link" onClick={() => handleDelete(acct)}>删除</button>
                     </td>
@@ -2429,6 +2569,24 @@ function AccountManagement() {
           </div>
         )}
       </div>
+
+      {/* 账单同步月份选择弹窗 */}
+      <MonthPickerModal
+        open={!!billSyncDialog}
+        onClose={() => setBillSyncDialog(null)}
+        title={`同步账单 - ${billSyncDialog?.accountName || ''}`}
+        year={billSyncYear}
+        onYearChange={setBillSyncYear}
+        value={billSyncMonth}
+        onChange={setBillSyncMonth}
+        statusText={billSyncMonth ? `已选：${billSyncMonth}` : '未选择，将同步当月账单'}
+        confirmLabel="开始同步"
+        onConfirm={() => {
+          handleSync(billSyncDialog.accountId, 'bills', billSyncMonth || null)
+          setBillSyncDialog(null)
+        }}
+      />
+
       {confirmNode}
     </div>
   )
@@ -2438,7 +2596,7 @@ function AccountManagement() {
 function RamManagement() {
   const toast = useToast()
   const [accounts, setAccounts] = useState([])
-  const [selectedAccount, setSelectedAccount] = useState('')
+  const [selectedAccount, setSelectedAccount] = useState('all')
   const [ramUsers, setRamUsers] = useState([])
   const [loading, setLoading] = useState(false)
   const [showCreateForm, setShowCreateForm] = useState(false)
@@ -4595,6 +4753,14 @@ function LogManagement() {
       .catch(err => toast.error('清空失败: ' + (err.response?.data?.error || err.message)))
   }
 
+  const handleDeleteLog = async (id) => {
+    const ok = await showConfirm('确定删除这条日志？')
+    if (!ok) return
+    axios.delete(`/api/logs/${id}`)
+      .then(() => { toast.success('日志已删除'); loadLogs(page) })
+      .catch(err => toast.error('删除失败: ' + (err.response?.data?.error || err.message)))
+  }
+
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
   const fmtLogTime = (v) => {
@@ -4648,11 +4814,12 @@ function LogManagement() {
               <th style={{ width: 130, whiteSpace: 'nowrap' }}>操作</th>
               <th style={{ width: 80 }}>结果</th>
               <th>操作详情</th>
+              <th style={{ width: 60 }}>操作</th>
             </tr>
           </thead>
           <tbody>
             {logs.length === 0 ? (
-              <tr><td colSpan="6" style={{ textAlign: 'center', color: '#94a3b8', padding: 32 }}>
+              <tr><td colSpan="7" style={{ textAlign: 'center', color: '#94a3b8', padding: 32 }}>
                 {loading ? '加载中..' : '暂无操作日志'}
               </td></tr>
             ) : logs.map(log => (
@@ -4671,6 +4838,9 @@ function LogManagement() {
                   {log.success === 0 && log.error_msg && (
                     <div style={{ color: '#ef4444', fontSize: 12, marginTop: 2 }}>{log.error_msg}</div>
                   )}
+                </td>
+                <td className="td-actions">
+                  <button className="btn-link btn-danger-link" onClick={() => handleDeleteLog(log.id)}>删除</button>
                 </td>
               </tr>
             ))}

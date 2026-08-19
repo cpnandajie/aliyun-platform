@@ -1693,8 +1693,10 @@ def _compute_details_summary(bill_items):
     return merged
 
 
-def sync_bill(account_id, access_key_id, access_key_secret):
-    """同步账单数据（仅当月）"""
+def sync_bill(account_id, access_key_id, access_key_secret, billing_month=None):
+    """同步账单数据
+    billing_month: 指定月份，格式 YYYY-MM，默认为当月
+    """
     try:
         from alibabacloud_bssopenapi20171214.client import Client as BssClient
         from alibabacloud_bssopenapi20171214 import models as bss_models
@@ -1736,10 +1738,9 @@ def sync_bill(account_id, access_key_id, access_key_secret):
             app.logger.error(f"[账单] {acct_name} 所有BSS端点均认证失败")
             return []
 
-        # 同步当月账单
+        # 同步指定月份账单（默认当月）
         synced_cycles = []
-        now = datetime.now()
-        billing_cycle = now.strftime('%Y-%m')
+        billing_cycle = billing_month or datetime.now().strftime('%Y-%m')
 
         try:
             # 兼容不同SDK版本的Request类名和方法名
@@ -2033,21 +2034,22 @@ def sync_renewal_prices(account_id, access_key_id, access_key_secret):
         print(f"[INFO] Redis续费价格同步完成: {len(redis_instances)}个实例, 成功{success_count}个")
 
 
-def do_sync_account(account_id, sync_type='all'):
+def do_sync_account(account_id, sync_type='all', billing_month=None):
     """同步单个账号数据
     sync_type: 'all' = 全部, 'resources' = 仅资源, 'bills' = 仅账单
+    billing_month: 指定账单月份 YYYY-MM，仅对账单同步有效
     """
     lock = _get_account_sync_lock(account_id)
     if not lock.acquire(blocking=False):
         app.logger.warning(f"[同步] 账号 {account_id} 正在同步中，跳过本次")
         return {'success': False, 'message': '该账号正在同步中，请稍后再试'}
     try:
-        return _do_sync_account_inner(account_id, sync_type)
+        return _do_sync_account_inner(account_id, sync_type, billing_month)
     finally:
         lock.release()
 
 
-def _do_sync_account_inner(account_id, sync_type='all'):
+def _do_sync_account_inner(account_id, sync_type='all', billing_month=None):
     """实际执行同步的内部函数"""
     try:
         conn = get_db()
@@ -2189,10 +2191,10 @@ def _do_sync_account_inner(account_id, sync_type='all'):
             except Exception as e:
                 print(f"[WARN] 同步续费价格失败: {str(e)}")
 
-        # ===== 账单同步（仅当月）=====
+        # ===== 账单同步 =====
         if sync_bills:
             try:
-                results['bills'] = sync_bill(account_id, ak, sk)
+                results['bills'] = sync_bill(account_id, ak, sk, billing_month=billing_month)
             except Exception as e:
                 results['bills'] = []
                 errors.append(f'账单: {str(e)}')
@@ -2235,7 +2237,7 @@ def _do_sync_account_inner(account_id, sync_type='all'):
 
 # ==================== 异步同步任务管理 ====================
 
-def _run_sync_task(task_id, account_id, sync_type):
+def _run_sync_task(task_id, account_id, sync_type, billing_month=None):
     """在后台线程中执行同步任务"""
     acct_name = get_account_name(account_id)
     try:
@@ -2243,7 +2245,7 @@ def _run_sync_task(task_id, account_id, sync_type):
             sync_tasks[task_id]['status'] = 'running'
             sync_tasks[task_id]['started_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-        result = do_sync_account(account_id, sync_type=sync_type)
+        result = do_sync_account(account_id, sync_type=sync_type, billing_month=billing_month)
 
         with sync_tasks_lock:
             sync_tasks[task_id]['status'] = 'completed'
@@ -2562,6 +2564,7 @@ def api_sync_account(account_id):
         sync_type = data.get('sync_type', 'all')
         if sync_type not in ('all', 'resources', 'bills'):
             sync_type = 'all'
+        billing_month = data.get('billing_month')  # 可选，格式 YYYY-MM
 
         task_id = f"sync_{account_id}_{int(datetime.now().timestamp())}"
         with sync_tasks_lock:
@@ -2570,12 +2573,13 @@ def api_sync_account(account_id):
                 'type': 'single',
                 'account_id': account_id,
                 'sync_type': sync_type,
+                'billing_month': billing_month,
                 'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
 
-        t = threading.Thread(target=_run_sync_task, args=(task_id, account_id, sync_type), daemon=True)
+        t = threading.Thread(target=_run_sync_task, args=(task_id, account_id, sync_type, billing_month), daemon=True)
         t.start()
-        app.logger.info(f"[同步] 已创建异步任务 {task_id}")
+        app.logger.info(f"[同步] 已创建异步任务 {task_id}" + (f"，指定月份={billing_month}" if billing_month else ""))
         return jsonify({'success': True, 'task_id': task_id, 'message': '同步任务已启动'})
     except Exception as e:
         return jsonify({'success': False, 'message': f'启动同步失败: {str(e)}'}), 500
@@ -4775,6 +4779,16 @@ def api_get_logs():
         })
     except Exception as e:
         return jsonify({'error': f'查询日志失败: {str(e)}'}), 500
+
+
+@app.route('/api/logs/<int:log_id>', methods=['DELETE'])
+def api_delete_log(log_id):
+    """删除单条操作日志"""
+    try:
+        execute_db('DELETE FROM operation_logs WHERE id = ?', (log_id,))
+        return jsonify({'success': True, 'message': '日志已删除'})
+    except Exception as e:
+        return jsonify({'error': f'删除日志失败: {str(e)}'}), 500
 
 
 @app.route('/api/logs', methods=['DELETE'])
