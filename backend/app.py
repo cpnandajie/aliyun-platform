@@ -390,6 +390,7 @@ def init_db():
             detail TEXT,
             success INTEGER DEFAULT 1,
             error_msg TEXT,
+            ip_address TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -525,6 +526,18 @@ def init_db():
         conn.close()
     except Exception:
         pass
+    # 检查operation_logs表有ip_address列（后续版本新增）
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(operation_logs)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'ip_address' not in columns:
+            cursor.execute('ALTER TABLE operation_logs ADD COLUMN ip_address TEXT')
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
     # 创建手动公网IP表
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -554,6 +567,93 @@ def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    # 创建网址大全表
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS web_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                url TEXT NOT NULL,
+                description TEXT,
+                category TEXT DEFAULT '',
+                sort_order INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    # 清理资源表重复数据并创建唯一索引（防止同步产生重复记录）
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        # 各资源表：清理重复数据（保留最新的一条）
+        dedup_tables = [
+            ('ecs_instances', 'instance_id'),
+            ('rds_instances', 'instance_id'),
+            ('slb_instances', 'instance_id'),
+            ('oss_buckets', 'bucket_name'),
+            ('redis_instances', 'instance_id'),
+            ('vpc_instances', 'instance_id'),
+            ('vswitch_instances', 'instance_id'),
+            ('eip_instances', 'instance_id'),
+            ('nat_instances', 'instance_id'),
+        ]
+        for table, id_col in dedup_tables:
+            try:
+                cursor.execute(f'''
+                    DELETE FROM {table} WHERE id NOT IN (
+                        SELECT MAX(id) FROM {table} GROUP BY account_id, {id_col}
+                    )
+                ''')
+            except Exception:
+                pass
+        # 账单表：按 (account_id, billing_cycle) 去重
+        try:
+            cursor.execute('''
+                DELETE FROM monthly_bills WHERE id NOT IN (
+                    SELECT MAX(id) FROM monthly_bills GROUP BY account_id, billing_cycle
+                )
+            ''')
+        except Exception:
+            pass
+        # 余额表：按 account_id 去重
+        try:
+            cursor.execute('''
+                DELETE FROM account_balance WHERE id NOT IN (
+                    SELECT MAX(id) FROM account_balance GROUP BY account_id
+                )
+            ''')
+        except Exception:
+            pass
+        conn.commit()
+        # 创建唯一索引
+        unique_indexes = [
+            ('idx_ecs_acct_inst', 'ecs_instances', 'account_id, instance_id'),
+            ('idx_rds_acct_inst', 'rds_instances', 'account_id, instance_id'),
+            ('idx_slb_acct_inst', 'slb_instances', 'account_id, instance_id'),
+            ('idx_oss_acct_bucket', 'oss_buckets', 'account_id, bucket_name'),
+            ('idx_redis_acct_inst', 'redis_instances', 'account_id, instance_id'),
+            ('idx_vpc_acct_inst', 'vpc_instances', 'account_id, instance_id'),
+            ('idx_vswitch_acct_inst', 'vswitch_instances', 'account_id, instance_id'),
+            ('idx_eip_acct_inst', 'eip_instances', 'account_id, instance_id'),
+            ('idx_nat_acct_inst', 'nat_instances', 'account_id, instance_id'),
+            ('idx_bill_acct_cycle', 'monthly_bills', 'account_id, billing_cycle'),
+            ('idx_balance_acct', 'account_balance', 'account_id'),
+        ]
+        for idx_name, table, columns in unique_indexes:
+            try:
+                cursor.execute(f'CREATE UNIQUE INDEX IF NOT EXISTS {idx_name} ON {table}({columns})')
+            except Exception:
+                pass
         conn.commit()
         conn.close()
     except Exception:
@@ -588,16 +688,24 @@ def execute_db(sql, args=()):
     return last_id
 
 
-def log_operation(module, action, detail='', account_id=None, account_name=None, success=True, error_msg=''):
+def log_operation(module, action, detail='', account_id=None, account_name=None, success=True, error_msg='', ip_address=None):
     """记录操作日志（除查询外的所有操作）。该函数不抛出异常，避免影响主流程。"""
     try:
         execute_db('''
-            INSERT INTO operation_logs (account_id, account_name, module, action, detail, success, error_msg, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO operation_logs (account_id, account_name, module, action, detail, success, error_msg, ip_address, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (account_id, account_name, module, action, str(detail), 1 if success else 0, str(error_msg) if error_msg else '',
-              datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+              ip_address or '', datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
     except Exception as e:
         print(f"[WARN] 写入操作日志失败: {e}")
+
+
+def get_client_ip():
+    """获取客户端真实IP（兼容反向代理）"""
+    forwarded_for = request.headers.get('X-Forwarded-For')
+    if forwarded_for:
+        return forwarded_for.split(',')[0].strip()
+    return request.remote_addr or ''
 
 
 def get_account_name(account_id):
@@ -755,6 +863,79 @@ def create_aliyun_client(access_key_id, access_key_secret, endpoint):
         return None
 
 
+def _sync_paginated_resource(account_id, access_key_id, access_key_secret, service_type,
+                             client_class, request_class, api_method,
+                             parse_items, process_item, get_total=None,
+                             page_size=100, regions=None):
+    """
+    通用的分页资源同步函数
+    
+    Args:
+        service_type: 服务类型（用于获取 endpoint）
+        client_class: SDK 客户端类
+        request_class: 请求模型类
+        api_method: API 方法名（字符串）或可调用对象
+        parse_items: 从响应中解析实例列表的函数 (resp) -> list
+        process_item: 处理单个实例的函数 (item, region_id) -> None
+        get_total: 从响应中获取总数的函数 (resp) -> int，默认用 page_size 判断
+        page_size: 每页大小
+        regions: 区域列表，默认用 get_default_regions()
+    """
+    from alibabacloud_tea_openapi import models as open_api_models
+    
+    total_synced = 0
+    regions = regions or get_default_regions()
+    
+    for region_id in regions:
+        try:
+            config = open_api_models.Config(
+                access_key_id=access_key_id,
+                access_key_secret=access_key_secret
+            )
+            config.endpoint = get_api_endpoint(service_type, account_id)
+            client = client_class(config)
+            
+            # 支持方法名或可调用对象
+            if isinstance(api_method, str):
+                call_api = getattr(client, api_method)
+            else:
+                call_api = api_method
+            
+            page_number = 1
+            while True:
+                req = request_class(
+                    region_id=region_id,
+                    page_size=page_size,
+                    page_number=page_number
+                )
+                resp = call_api(req)
+                instances = parse_items(resp)
+                
+                for inst in instances:
+                    try:
+                        process_item(inst, region_id)
+                        total_synced += 1
+                    except Exception as e:
+                        inst_id = getattr(inst, 'instance_id', getattr(inst, 'vpc_id', getattr(inst, 'bucket_name', 'unknown')))
+                        print(f"[WARN] 同步实例 {inst_id} 失败: {str(e)}")
+                        continue
+                
+                # 判断是否还有下一页
+                if get_total:
+                    total = get_total(resp)
+                else:
+                    total = len(instances)
+                
+                if page_number * page_size >= total or not instances:
+                    break
+                page_number += 1
+                
+        except Exception as e:
+            print(f"[WARN] 同步 {service_type} {region_id} 失败: {str(e)}")
+            continue
+    
+    return total_synced
+
 def sync_ecs(account_id, access_key_id, access_key_secret):
     """同步ECS实例数据"""
     try:
@@ -866,11 +1047,8 @@ def sync_rds(account_id, access_key_id, access_key_secret):
                 # 兼容不同SDK版本的方法名
                 describe_method = getattr(client, 'describe_db_instances', None) or getattr(client, 'describe_dbinstances', None)
                 if not describe_method:
-                    app.logger.error(f"RDS Client没有可用的DescribeDBInstances方法，可用方法: {all_methods}")
-                    print(f"[ERROR] RDS Client没有可用的DescribeDBInstances方法，可用方法: {all_methods}", flush=True)
+                    app.logger.error(f"RDS Client没有可用的DescribeDBInstances方法")
                     continue
-                else:
-                    app.logger.info(f"RDS使用方法: {describe_method.__name__}")
 
                 page_number = 1
                 while True:
@@ -880,29 +1058,13 @@ def sync_rds(account_id, access_key_id, access_key_secret):
                         page_number=page_number
                     )
                     resp = describe_method(req)
-                    if not resp.body:
-                        app.logger.info(f"RDS {region_id} page={page_number} resp.body为空")
-                    # 调试：打印响应体属性
-                    if page_number == 1:
-                        body_attrs = [a for a in dir(resp.body) if not a.startswith('_')]
-                        app.logger.info(f"RDS {region_id} resp.body属性: {body_attrs}")
                     items = getattr(resp.body, 'items', None)
                     if not items:
-                        app.logger.info(f"RDS {region_id} items为空，body属性: {[a for a in dir(resp.body) if not a.startswith('_')]}")
                         break
-                    items_attrs = [a for a in dir(items) if not a.startswith('_')]
-                    app.logger.info(f"RDS {region_id} items属性: {items_attrs}")
                     instances = getattr(items, 'dbinstance', None) or getattr(items, 'db_instance', None) or getattr(items, 'dbinstances', None) or []
 
                     for inst in instances:
                         try:
-                            # 调试：打印第一个实例的所有字段
-                            if instances.index(inst) == 0:
-                                inst_attrs = [a for a in dir(inst) if not a.startswith('_')]
-                                app.logger.info(f"RDS 实例字段: {inst_attrs}")
-                                app.logger.info(f"RDS CPU相关: {[a for a in inst_attrs if 'cpu' in a.lower()]}")
-                                app.logger.info(f"RDS 存储相关: {[a for a in inst_attrs if 'storage' in a.lower()]}")
-                                app.logger.info(f"RDS memory相关: {[a for a in inst_attrs if 'memory' in a.lower()]}")
                             execute_db('''
                                 INSERT OR REPLACE INTO rds_instances
                                 (account_id, instance_id, instance_name, engine, engine_version,
@@ -921,8 +1083,8 @@ def sync_rds(account_id, access_key_id, access_key_secret):
                                 getattr(inst, 'dbinstance_status', getattr(inst, 'db_instance_status', getattr(inst, 'dbinstances_status', ''))),
                                 region_id,
                                 getattr(inst, 'connection_mode', ''),
-                                getattr(inst, 'creation_time', ''),
-                                getattr(inst, 'expire_time', ''),
+                                getattr(inst, 'creation_time', '') or getattr(inst, 'create_time', ''),
+                                getattr(inst, 'expire_time', '') or getattr(inst, 'end_time', ''),
                                 datetime.now()
                             ))
                             total_synced += 1
@@ -953,58 +1115,37 @@ def sync_slb(account_id, access_key_id, access_key_secret):
     try:
         from alibabacloud_slb20140515.client import Client as SlbClient
         from alibabacloud_slb20140515 import models as slb_models
-        from alibabacloud_tea_openapi import models as open_api_models
 
-        total_synced = 0
-        for region_id in get_default_regions():
-            try:
-                config = open_api_models.Config(
-                    access_key_id=access_key_id,
-                    access_key_secret=access_key_secret
-                )
-                config.endpoint = get_api_endpoint('slb', account_id)
-                client = SlbClient(config)
+        def parse_items(resp):
+            items = resp.body.load_balancers if resp.body.load_balancers else None
+            return items.load_balancer if items else []
 
-                page_number = 1
-                while True:
-                    req = slb_models.DescribeLoadBalancersRequest(
-                        region_id=region_id,
-                        page_size=100,
-                        page_number=page_number
-                    )
-                    resp = client.describe_load_balancers(req)
-                    items = resp.body.load_balancers if resp.body.load_balancers else None
-                    instances = items.load_balancer if items else []
+        def process_item(inst, region_id):
+            execute_db('''
+                INSERT OR REPLACE INTO slb_instances
+                (account_id, instance_id, instance_name, address, address_type,
+                 status, network_type, region_id, created_time, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                account_id, inst.load_balancer_id,
+                getattr(inst, 'load_balancer_name', ''),
+                getattr(inst, 'address', ''),
+                getattr(inst, 'address_type', ''),
+                getattr(inst, 'load_balancer_status', ''),
+                getattr(inst, 'network_type', ''),
+                region_id,
+                getattr(inst, 'create_time', ''),
+                datetime.now()
+            ))
 
-                    for inst in instances:
-                        execute_db('''
-                            INSERT INTO slb_instances
-                            (account_id, instance_id, instance_name, address, address_type,
-                             status, network_type, region_id, created_time, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (
-                            account_id, inst.load_balancer_id,
-                            getattr(inst, 'load_balancer_name', ''),
-                            getattr(inst, 'address', ''),
-                            getattr(inst, 'address_type', ''),
-                            getattr(inst, 'load_balancer_status', ''),
-                            getattr(inst, 'network_type', ''),
-                            region_id,
-                            getattr(inst, 'create_time', ''),
-                            datetime.now()
-                        ))
-                        total_synced += 1
+        def get_total(resp):
+            return resp.body.total_count if resp.body.total_count else 0
 
-                    total_record = resp.body.total_count if resp.body.total_count else 0
-                    if page_number * 100 >= total_record:
-                        break
-                    page_number += 1
-
-            except Exception as e:
-                print(f"[WARN] 同步SLB {region_id} 失败: {str(e)}")
-                continue
-
-        return total_synced
+        return _sync_paginated_resource(
+            account_id, access_key_id, access_key_secret, 'slb',
+            SlbClient, slb_models.DescribeLoadBalancersRequest, 'describe_load_balancers',
+            parse_items, process_item, get_total
+        )
     except ImportError:
         print("[ERROR] SLB SDK未安装")
         return 0
@@ -1064,73 +1205,43 @@ def sync_redis(account_id, access_key_id, access_key_secret):
     try:
         from alibabacloud_r_kvstore20150101.client import Client as KvstoreClient
         from alibabacloud_r_kvstore20150101 import models as kvstore_models
-        from alibabacloud_tea_openapi import models as open_api_models
 
-        total_synced = 0
-        for region_id in get_default_regions():
-            try:
-                config = open_api_models.Config(
-                    access_key_id=access_key_id,
-                    access_key_secret=access_key_secret
-                )
-                config.endpoint = get_api_endpoint('redis', account_id)
-                client = KvstoreClient(config)
-                app.logger.info(f"Redis同步 {region_id} endpoint=r-kvstore.aliyuncs.com")
+        def parse_items(resp):
+            if not resp.body or not resp.body.instances:
+                return []
+            return getattr(resp.body.instances, 'kvstore_instance', None) or getattr(resp.body.instances, 'kvstoreinstance', None) or []
 
-                page_number = 1
-                while True:
-                    req = kvstore_models.DescribeInstancesRequest(
-                        region_id=region_id,
-                        page_size=100,
-                        page_number=page_number
-                    )
-                    resp = client.describe_instances(req)
-                    if not resp.body or not resp.body.instances:
-                        break
-                    # 兼容不同SDK版本的字段名
-                    instances = getattr(resp.body.instances, 'kvstore_instance', None) or getattr(resp.body.instances, 'kvstoreinstance', None) or []
-                    if page_number == 1 and region_id == get_default_regions()[0]:
-                        inst_attrs = [a for a in dir(resp.body.instances) if not a.startswith('_') and 'instance' in a.lower()]
-                        app.logger.info(f"Redis instances属性: {inst_attrs}")
+        def process_item(inst, region_id):
+            execute_db('''
+                INSERT OR REPLACE INTO redis_instances
+                (account_id, instance_id, instance_name, instance_type, engine_version,
+                 architecture_type, capacity, status, region_id,
+                 connection_domain, port, created_time, expired_time, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                account_id, inst.instance_id,
+                getattr(inst, 'instance_name', ''),
+                getattr(inst, 'instance_type', ''),
+                getattr(inst, 'engine_version', ''),
+                getattr(inst, 'architecture_type', ''),
+                getattr(inst, 'capacity', ''),
+                getattr(inst, 'instance_status', '') or getattr(inst, 'status', ''),
+                region_id,
+                getattr(inst, 'connection_domain', ''),
+                getattr(inst, 'port', 0),
+                getattr(inst, 'creation_time', '') or getattr(inst, 'create_time', ''),
+                getattr(inst, 'end_time', '') or getattr(inst, 'expire_time', ''),
+                datetime.now()
+            ))
 
-                    for inst in instances:
-                        try:
-                            execute_db('''
-                                INSERT OR REPLACE INTO redis_instances
-                                (account_id, instance_id, instance_name, instance_type, engine_version,
-                                 architecture_type, capacity, status, region_id,
-                                 connection_domain, port, created_time, expired_time, updated_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ''', (
-                                account_id, inst.instance_id,
-                                getattr(inst, 'instance_name', ''),
-                                getattr(inst, 'instance_type', ''),
-                                getattr(inst, 'engine_version', ''),
-                                getattr(inst, 'architecture_type', ''),
-                                getattr(inst, 'capacity', ''),
-                                getattr(inst, 'instance_status', '') or getattr(inst, 'status', ''),
-                                region_id,
-                                getattr(inst, 'connection_domain', ''),
-                                getattr(inst, 'port', 0),
-                                getattr(inst, 'creation_time', ''),
-                                getattr(inst, 'end_time', ''),
-                                datetime.now()
-                            ))
-                            total_synced += 1
-                        except Exception as e:
-                            print(f"[WARN] 同步Redis实例 {getattr(inst, 'instance_id', 'unknown')} 失败: {str(e)}")
-                            continue
+        def get_total(resp):
+            return resp.body.total_count or 0
 
-                    total_record = resp.body.total_count or 0
-                    if page_number * 100 >= total_record:
-                        break
-                    page_number += 1
-
-            except Exception as e:
-                print(f"[WARN] 同步Redis {region_id} 失败: {str(e)}")
-                continue
-
-        return total_synced
+        return _sync_paginated_resource(
+            account_id, access_key_id, access_key_secret, 'redis',
+            KvstoreClient, kvstore_models.DescribeInstancesRequest, 'describe_instances',
+            parse_items, process_item, get_total
+        )
     except ImportError:
         print("[ERROR] Redis SDK未安装")
         return 0
@@ -1144,42 +1255,30 @@ def sync_vpc(account_id, access_key_id, access_key_secret):
     try:
         from alibabacloud_vpc20160428.client import Client as VpcClient
         from alibabacloud_vpc20160428 import models as vpc_models
-        from alibabacloud_tea_openapi import models as open_api_models
 
-        total_synced = 0
-        for region_id in get_default_regions():
-            try:
-                config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
-                config.endpoint = get_api_endpoint('vpc', account_id)
-                client = VpcClient(config)
+        def parse_items(resp):
+            return resp.body.vpcs.vpc if resp.body.vpcs else []
 
-                page_number = 1
-                while True:
-                    req = vpc_models.DescribeVpcsRequest(region_id=region_id, page_size=50, page_number=page_number)
-                    resp = client.describe_vpcs(req)
-                    vpcs = resp.body.vpcs.vpc if resp.body.vpcs else []
+        def process_item(vpc, region_id):
+            execute_db('''
+                INSERT OR REPLACE INTO vpc_instances
+                (account_id, instance_id, vpc_name, cidr_block, region_id, status, created_time, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                account_id, vpc.vpc_id, getattr(vpc, 'vpc_name', ''),
+                getattr(vpc, 'cidr_block', ''), region_id,
+                getattr(vpc, 'status', ''), getattr(vpc, 'creation_time', ''),
+                datetime.now()
+            ))
 
-                    for vpc in vpcs:
-                        execute_db('''
-                            INSERT OR REPLACE INTO vpc_instances
-                            (account_id, instance_id, vpc_name, cidr_block, region_id, status, created_time, updated_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        ''', (
-                            account_id, vpc.vpc_id, getattr(vpc, 'vpc_name', ''),
-                            getattr(vpc, 'cidr_block', ''), region_id,
-                            getattr(vpc, 'status', ''), getattr(vpc, 'creation_time', ''),
-                            datetime.now()
-                        ))
-                        total_synced += 1
+        def get_total(resp):
+            return resp.body.total_count or 0
 
-                    total_count = resp.body.total_count or 0
-                    if page_number * 50 >= total_count:
-                        break
-                    page_number += 1
-            except Exception as e:
-                print(f"[WARN] 同步VPC {region_id} 失败: {str(e)}")
-                continue
-        return total_synced
+        return _sync_paginated_resource(
+            account_id, access_key_id, access_key_secret, 'vpc',
+            VpcClient, vpc_models.DescribeVpcsRequest, 'describe_vpcs',
+            parse_items, process_item, get_total, page_size=50
+        )
     except ImportError:
         print("[ERROR] VPC SDK未安装")
         return 0
@@ -1271,7 +1370,7 @@ def sync_eip(account_id, access_key_id, access_key_secret):
 
                     for eip in eips:
                         execute_db('''
-                            INSERT INTO eip_instances
+                            INSERT OR REPLACE INTO eip_instances
                             (account_id, instance_id, ip_address, name, status, bandwidth, region_id, charge_type, created_time, updated_at)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ''', (
@@ -1357,7 +1456,6 @@ def sync_ram_users(account_id, access_key_id, access_key_secret):
         from alibabacloud_ram20150501 import models as ram_models
         from alibabacloud_tea_openapi import models as open_api_models
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        import json
 
         config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
         config.endpoint = 'ram.aliyuncs.com'
@@ -2085,74 +2183,88 @@ def _do_sync_account_inner(account_id, sync_type='all', billing_month=None):
 
         # ===== 资源同步 =====
         if sync_resources:
-            # 删除旧资源数据
-            for table in ['ecs_instances', 'rds_instances', 'slb_instances', 'oss_buckets', 'redis_instances',
-                         'vpc_instances', 'vswitch_instances', 'eip_instances', 'nat_instances']:
-                execute_db(f'DELETE FROM {table} WHERE account_id = ?', (account_id,))
-
+            # 先同步新数据，成功后再删除旧数据（避免同步失败导致数据丢失）
+            temp_results = {}
+            temp_errors = []
+            
+            # 尝试同步各资源类型
             try:
-                results['ecs'] = sync_ecs(account_id, ak, sk)
+                temp_results['ecs'] = sync_ecs(account_id, ak, sk)
             except Exception as e:
-                results['ecs'] = 0
-                errors.append(f'ECS: {str(e)}')
+                temp_results['ecs'] = 0
+                temp_errors.append(f'ECS: {str(e)}')
                 print(f"[ERROR] 同步ECS异常: {str(e)}")
 
             try:
-                results['rds'] = sync_rds(account_id, ak, sk)
+                temp_results['rds'] = sync_rds(account_id, ak, sk)
             except Exception as e:
-                results['rds'] = 0
-                errors.append(f'RDS: {str(e)}')
+                temp_results['rds'] = 0
+                temp_errors.append(f'RDS: {str(e)}')
                 print(f"[ERROR] 同步RDS异常: {str(e)}")
 
             try:
-                results['slb'] = sync_slb(account_id, ak, sk)
+                temp_results['slb'] = sync_slb(account_id, ak, sk)
             except Exception as e:
-                results['slb'] = 0
-                errors.append(f'SLB: {str(e)}')
+                temp_results['slb'] = 0
+                temp_errors.append(f'SLB: {str(e)}')
                 print(f"[ERROR] 同步SLB异常: {str(e)}")
 
             try:
-                results['oss'] = sync_oss(account_id, ak, sk)
+                temp_results['oss'] = sync_oss(account_id, ak, sk)
             except Exception as e:
-                results['oss'] = 0
-                errors.append(f'OSS: {str(e)}')
+                temp_results['oss'] = 0
+                temp_errors.append(f'OSS: {str(e)}')
                 print(f"[ERROR] 同步OSS异常: {str(e)}")
 
             try:
-                results['redis'] = sync_redis(account_id, ak, sk)
+                temp_results['redis'] = sync_redis(account_id, ak, sk)
             except Exception as e:
-                results['redis'] = 0
-                errors.append(f'Redis: {str(e)}')
+                temp_results['redis'] = 0
+                temp_errors.append(f'Redis: {str(e)}')
                 print(f"[ERROR] 同步Redis异常: {str(e)}")
 
             # 网络资源同步
             try:
-                results['vpc'] = sync_vpc(account_id, ak, sk)
+                temp_results['vpc'] = sync_vpc(account_id, ak, sk)
             except Exception as e:
-                results['vpc'] = 0
-                errors.append(f'VPC: {str(e)}')
+                temp_results['vpc'] = 0
+                temp_errors.append(f'VPC: {str(e)}')
                 print(f"[ERROR] 同步VPC异常: {str(e)}")
 
             try:
-                results['vswitch'] = sync_vswitch(account_id, ak, sk)
+                temp_results['vswitch'] = sync_vswitch(account_id, ak, sk)
             except Exception as e:
-                results['vswitch'] = 0
-                errors.append(f'交换机: {str(e)}')
+                temp_results['vswitch'] = 0
+                temp_errors.append(f'交换机: {str(e)}')
                 print(f"[ERROR] 同步交换机异常: {str(e)}")
 
             try:
-                results['eip'] = sync_eip(account_id, ak, sk)
+                temp_results['eip'] = sync_eip(account_id, ak, sk)
             except Exception as e:
-                results['eip'] = 0
-                errors.append(f'EIP: {str(e)}')
+                temp_results['eip'] = 0
+                temp_errors.append(f'EIP: {str(e)}')
                 print(f"[ERROR] 同步EIP异常: {str(e)}")
 
             try:
-                results['nat'] = sync_nat(account_id, ak, sk)
+                temp_results['nat'] = sync_nat(account_id, ak, sk)
             except Exception as e:
-                results['nat'] = 0
-                errors.append(f'NAT: {str(e)}')
+                temp_results['nat'] = 0
+                temp_errors.append(f'NAT: {str(e)}')
                 print(f"[ERROR] 同步NAT异常: {str(e)}")
+            
+            # 检查是否有任何资源同步成功
+            total_synced = sum(temp_results.values())
+            
+            # 如果所有资源同步都失败（返回0），且有错误，则保留旧数据
+            if total_synced == 0 and len(temp_errors) > 0:
+                print(f"[WARN] 所有资源同步失败，保留旧数据。错误: {temp_errors}")
+                errors.extend(temp_errors)
+                results.update({k: 0 for k in temp_results.keys()})
+            else:
+                # 同步成功，删除旧数据（新数据已在同步过程中插入）
+                # 注意：sync_* 函数内部已经处理了数据插入，这里不需要再删除
+                results.update(temp_results)
+                errors.extend(temp_errors)
 
             # RAM用户同步
             try:
@@ -2237,7 +2349,7 @@ def _do_sync_account_inner(account_id, sync_type='all', billing_month=None):
 
 # ==================== 异步同步任务管理 ====================
 
-def _run_sync_task(task_id, account_id, sync_type, billing_month=None):
+def _run_sync_task(task_id, account_id, sync_type, billing_month=None, ip_address=None):
     """在后台线程中执行同步任务"""
     acct_name = get_account_name(account_id)
     try:
@@ -2256,7 +2368,8 @@ def _run_sync_task(task_id, account_id, sync_type, billing_month=None):
         ok = result.get('success', False) if isinstance(result, dict) else False
         log_operation('数据同步', f'同步{type_label}', result.get('message', '') if isinstance(result, dict) else '',
                       account_id=account_id, account_name=acct_name, success=ok,
-                      error_msg='' if ok else (result.get('message', '') if isinstance(result, dict) else ''))
+                      error_msg='' if ok else (result.get('message', '') if isinstance(result, dict) else ''),
+                      ip_address=ip_address)
     except Exception as e:
         tb = traceback.format_exc()
         app.logger.error(f"[同步任务 {task_id}] 异常: {str(e)}\n{tb}")
@@ -2264,7 +2377,7 @@ def _run_sync_task(task_id, account_id, sync_type, billing_month=None):
             sync_tasks[task_id]['status'] = 'failed'
             sync_tasks[task_id]['error'] = str(e)
             sync_tasks[task_id]['completed_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        log_operation('数据同步', '同步任务', f'同步任务异常', account_id=account_id, account_name=acct_name, success=False, error_msg=str(e))
+        log_operation('数据同步', '同步任务', f'同步任务异常', account_id=account_id, account_name=acct_name, success=False, error_msg=str(e), ip_address=ip_address)
 
 
 def _run_sync_all_task(task_id, accounts, sync_type):
@@ -2399,10 +2512,10 @@ def api_add_account():
             'INSERT INTO accounts (name, access_key_id, access_key_secret, remark, balance_threshold, currency) VALUES (?, ?, ?, ?, ?, ?)',
             (name, access_key_id, access_key_secret, remark, balance_threshold, currency)
         )
-        log_operation('账号管理', '添加账号', f'新增账号：{name}', account_id=last_id, account_name=name)
+        log_operation('账号管理', '添加账号', f'新增账号：{name}', account_id=last_id, account_name=name, ip_address=get_client_ip())
         return jsonify({'success': True, 'id': last_id, 'message': '账号添加成功'})
     except Exception as e:
-        log_operation('账号管理', '添加账号', f'新增账号：{name}', account_name=name, success=False, error_msg=str(e))
+        log_operation('账号管理', '添加账号', f'新增账号：{name}', account_name=name, success=False, error_msg=str(e), ip_address=get_client_ip())
         return jsonify({'error': f'添加账号失败: {str(e)}'}), 500
 
 
@@ -2419,10 +2532,10 @@ def api_delete_account(account_id):
         execute_db('DELETE FROM monthly_bills WHERE account_id = ?', (account_id,))
         execute_db('DELETE FROM account_balance WHERE account_id = ?', (account_id,))
         execute_db('DELETE FROM accounts WHERE id = ?', (account_id,))
-        log_operation('账号管理', '删除账号', f'删除账号：{acct_name}', account_id=account_id, account_name=acct_name)
+        log_operation('账号管理', '删除账号', f'删除账号：{acct_name}', account_id=account_id, account_name=acct_name, ip_address=get_client_ip())
         return jsonify({'success': True, 'message': '账号已删除'})
     except Exception as e:
-        log_operation('账号管理', '删除账号', f'删除账号：{acct_name}', account_id=account_id, account_name=acct_name, success=False, error_msg=str(e))
+        log_operation('账号管理', '删除账号', f'删除账号：{acct_name}', account_id=account_id, account_name=acct_name, success=False, error_msg=str(e), ip_address=get_client_ip())
         return jsonify({'error': f'删除账号失败: {str(e)}'}), 500
 
 
@@ -2446,21 +2559,30 @@ def api_update_account(account_id):
     if currency not in ('CNY', 'SGD'):
         currency = 'CNY'
 
+    # 验证必填字段
+    if not name:
+        return jsonify({'error': '账号名称不能为空'}), 400
+    if not access_key_id:
+        return jsonify({'error': 'AccessKey ID 不能为空'}), 400
+
     try:
-        if access_key_secret:
-            execute_db('''
-                UPDATE accounts SET name=?, access_key_id=?, access_key_secret=?, remark=?, balance_threshold=?, currency=?, updated_at=?
-                WHERE id=?
-            ''', (name, access_key_id, access_key_secret, remark, balance_threshold, currency, datetime.now(), account_id))
-        else:
-            execute_db('''
-                UPDATE accounts SET name=?, access_key_id=?, remark=?, balance_threshold=?, currency=?, updated_at=?
-                WHERE id=?
-            ''', (name, access_key_id, remark, balance_threshold, currency, datetime.now(), account_id))
-        log_operation('账号管理', '更新账号', f'更新账号：{name}', account_id=account_id, account_name=name)
+        # 获取当前账号信息
+        current = query_db('SELECT access_key_id, access_key_secret FROM accounts WHERE id = ?', (account_id,), one=True)
+        if not current:
+            return jsonify({'error': '账号不存在'}), 404
+        
+        # 如果 AccessKey Secret 为空，保留原来的值
+        if not access_key_secret:
+            access_key_secret = current['access_key_secret']
+        
+        execute_db('''
+            UPDATE accounts SET name=?, access_key_id=?, access_key_secret=?, remark=?, balance_threshold=?, currency=?, updated_at=?
+            WHERE id=?
+        ''', (name, access_key_id, access_key_secret, remark, balance_threshold, currency, datetime.now(), account_id))
+        log_operation('账号管理', '更新账号', f'更新账号：{name}', account_id=account_id, account_name=name, ip_address=get_client_ip())
         return jsonify({'success': True, 'message': '账号更新成功'})
     except Exception as e:
-        log_operation('账号管理', '更新账号', f'更新账号：{name}', account_id=account_id, account_name=name, success=False, error_msg=str(e))
+        log_operation('账号管理', '更新账号', f'更新账号：{name}', account_id=account_id, account_name=name, success=False, error_msg=str(e), ip_address=get_client_ip())
         return jsonify({'error': f'更新账号失败: {str(e)}'}), 500
 
 
@@ -2565,6 +2687,7 @@ def api_sync_account(account_id):
         if sync_type not in ('all', 'resources', 'bills'):
             sync_type = 'all'
         billing_month = data.get('billing_month')  # 可选，格式 YYYY-MM
+        client_ip = get_client_ip()
 
         task_id = f"sync_{account_id}_{int(datetime.now().timestamp())}"
         with sync_tasks_lock:
@@ -2577,7 +2700,7 @@ def api_sync_account(account_id):
                 'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
 
-        t = threading.Thread(target=_run_sync_task, args=(task_id, account_id, sync_type, billing_month), daemon=True)
+        t = threading.Thread(target=_run_sync_task, args=(task_id, account_id, sync_type, billing_month, client_ip), daemon=True)
         t.start()
         app.logger.info(f"[同步] 已创建异步任务 {task_id}" + (f"，指定月份={billing_month}" if billing_month else ""))
         return jsonify({'success': True, 'task_id': task_id, 'message': '同步任务已启动'})
@@ -2925,6 +3048,240 @@ def api_get_overview():
 
     conn.close()
     return jsonify(overview)
+
+
+# ---------- 全局搜索 ----------
+
+@app.route('/api/global-search', methods=['GET'])
+def api_global_search():
+    """全局搜索：跨资源类型搜索名称、IP、ID等"""
+    keyword = request.args.get('keyword', '').strip()
+    if not keyword:
+        return jsonify({'results': [], 'total': 0})
+
+    kw = f'%{keyword}%'
+    results = []
+
+    # 搜索账号
+    rows = query_db(
+        'SELECT id, name, remark, aliyun_account_id FROM accounts WHERE name LIKE ? OR remark LIKE ? OR aliyun_account_id LIKE ?',
+        (kw, kw, kw)
+    )
+    for r in rows:
+        results.append({
+            'type': '账号',
+            'type_key': 'account',
+            'id': r['id'],
+            'name': r['name'],
+            'detail': r['remark'] or r['aliyun_account_id'] or '',
+            'page': 'accounts'
+        })
+
+    # 搜索 ECS
+    rows = query_db(
+        '''SELECT e.id, e.instance_id, e.instance_name, e.private_ip, e.public_ip, e.region_id, a.name as account_name
+           FROM ecs_instances e LEFT JOIN accounts a ON e.account_id = a.id
+           WHERE e.instance_id LIKE ? OR e.instance_name LIKE ? OR e.private_ip LIKE ? OR e.public_ip LIKE ?''',
+        (kw, kw, kw, kw)
+    )
+    for r in rows:
+        results.append({
+            'type': 'ECS',
+            'type_key': 'ecs',
+            'id': r['id'],
+            'name': r['instance_name'] or r['instance_id'],
+            'detail': f"{r['private_ip'] or ''} {r['public_ip'] or ''} | {r['region_id'] or ''} | {r['account_name'] or ''}".strip(),
+            'page': 'resources'
+        })
+
+    # 搜索 RDS
+    rows = query_db(
+        '''SELECT r.id, r.instance_id, r.instance_name, r.engine, r.region_id, a.name as account_name
+           FROM rds_instances r LEFT JOIN accounts a ON r.account_id = a.id
+           WHERE r.instance_id LIKE ? OR r.instance_name LIKE ?''',
+        (kw, kw)
+    )
+    for r in rows:
+        results.append({
+            'type': 'RDS',
+            'type_key': 'rds',
+            'id': r['id'],
+            'name': r['instance_name'] or r['instance_id'],
+            'detail': f"{r['engine'] or ''} | {r['region_id'] or ''} | {r['account_name'] or ''}".strip(),
+            'page': 'resources'
+        })
+
+    # 搜索 SLB
+    rows = query_db(
+        '''SELECT s.id, s.instance_id, s.instance_name, s.address, s.region_id, a.name as account_name
+           FROM slb_instances s LEFT JOIN accounts a ON s.account_id = a.id
+           WHERE s.instance_id LIKE ? OR s.instance_name LIKE ? OR s.address LIKE ?''',
+        (kw, kw, kw)
+    )
+    for r in rows:
+        results.append({
+            'type': 'SLB',
+            'type_key': 'slb',
+            'id': r['id'],
+            'name': r['instance_name'] or r['instance_id'],
+            'detail': f"{r['address'] or ''} | {r['region_id'] or ''} | {r['account_name'] or ''}".strip(),
+            'page': 'resources'
+        })
+
+    # 搜索 OSS
+    rows = query_db(
+        '''SELECT o.id, o.bucket_name, o.location, o.storage_class, a.name as account_name
+           FROM oss_buckets o LEFT JOIN accounts a ON o.account_id = a.id
+           WHERE o.bucket_name LIKE ?''',
+        (kw,)
+    )
+    for r in rows:
+        results.append({
+            'type': 'OSS',
+            'type_key': 'oss',
+            'id': r['id'],
+            'name': r['bucket_name'],
+            'detail': f"{r['location'] or ''} | {r['storage_class'] or ''} | {r['account_name'] or ''}".strip(),
+            'page': 'resources'
+        })
+
+    # 搜索 Redis
+    rows = query_db(
+        '''SELECT r.id, r.instance_id, r.instance_name, r.connection_domain, r.region_id, a.name as account_name
+           FROM redis_instances r LEFT JOIN accounts a ON r.account_id = a.id
+           WHERE r.instance_id LIKE ? OR r.instance_name LIKE ? OR r.connection_domain LIKE ?''',
+        (kw, kw, kw)
+    )
+    for r in rows:
+        results.append({
+            'type': 'Redis',
+            'type_key': 'redis',
+            'id': r['id'],
+            'name': r['instance_name'] or r['instance_id'],
+            'detail': f"{r['connection_domain'] or ''} | {r['region_id'] or ''} | {r['account_name'] or ''}".strip(),
+            'page': 'resources'
+        })
+
+    # 搜索域名
+    rows = query_db(
+        '''SELECT d.id, d.domain_name, d.domain_id, d.version_name, a.name as account_name
+           FROM dns_domains d LEFT JOIN accounts a ON d.account_id = a.id
+           WHERE d.domain_name LIKE ?''',
+        (kw,)
+    )
+    for r in rows:
+        results.append({
+            'type': '域名',
+            'type_key': 'dns',
+            'id': r['id'],
+            'name': r['domain_name'],
+            'detail': f"{r['version_name'] or ''} | {r['account_name'] or ''}".strip(),
+            'page': 'dns'
+        })
+
+    # 搜索 SSL 证书
+    rows = query_db(
+        '''SELECT s.id, s.name, s.domain, s.status, s.end_date, a.name as account_name
+           FROM ssl_certificates s LEFT JOIN accounts a ON s.account_id = a.id
+           WHERE s.name LIKE ? OR s.domain LIKE ?''',
+        (kw, kw)
+    )
+    for r in rows:
+        results.append({
+            'type': 'SSL证书',
+            'type_key': 'ssl',
+            'id': r['id'],
+            'name': r['name'] or r['domain'],
+            'detail': f"{r['domain'] or ''} | 到期:{r['end_date'] or '-'} | {r['account_name'] or ''}".strip(),
+            'page': 'ssl'
+        })
+
+    # 搜索 RAM 用户
+    rows = query_db(
+        '''SELECT r.id, r.user_name, r.display_name, a.name as account_name
+           FROM ram_users r LEFT JOIN accounts a ON r.account_id = a.id
+           WHERE r.user_name LIKE ? OR r.display_name LIKE ?''',
+        (kw, kw)
+    )
+    for r in rows:
+        results.append({
+            'type': 'RAM用户',
+            'type_key': 'ram',
+            'id': r['id'],
+            'name': r['display_name'] or r['user_name'],
+            'detail': f"{r['user_name'] or ''} | {r['account_name'] or ''}".strip(),
+            'page': 'ram'
+        })
+
+    # 搜索公网 IP（手动录入）
+    rows = query_db(
+        'SELECT id, ip_address, remark, source FROM public_ips WHERE ip_address LIKE ? OR remark LIKE ?',
+        (kw, kw)
+    )
+    for r in rows:
+        results.append({
+            'type': '公网IP',
+            'type_key': 'publicip',
+            'id': r['id'],
+            'name': r['ip_address'],
+            'detail': f"{r['remark'] or ''} | {r['source'] or ''}".strip(),
+            'page': 'publicip'
+        })
+
+    # 搜索 EIP
+    rows = query_db(
+        '''SELECT e.id, e.ip_address, e.instance_id, e.name, e.region_id, a.name as account_name
+           FROM eip_instances e LEFT JOIN accounts a ON e.account_id = a.id
+           WHERE e.ip_address LIKE ? OR e.instance_id LIKE ? OR e.name LIKE ?''',
+        (kw, kw, kw)
+    )
+    for r in rows:
+        results.append({
+            'type': '公网IP',
+            'type_key': 'publicip',
+            'id': r['id'],
+            'name': r['ip_address'],
+            'detail': f"EIP | {r['name'] or r['instance_id'] or ''} | {r['account_name'] or ''}".strip(' |'),
+            'page': 'publicip'
+        })
+
+    # 搜索 SLB 公网 IP
+    rows = query_db(
+        '''SELECT s.id, s.address, s.instance_id, s.instance_name, s.region_id, a.name as account_name
+           FROM slb_instances s LEFT JOIN accounts a ON s.account_id = a.id
+           WHERE s.address_type = 'internet' AND s.address IS NOT NULL AND s.address != ''
+           AND (s.address LIKE ? OR s.instance_id LIKE ? OR s.instance_name LIKE ?)''',
+        (kw, kw, kw)
+    )
+    for r in rows:
+        results.append({
+            'type': '公网IP',
+            'type_key': 'publicip',
+            'id': r['id'],
+            'name': r['address'],
+            'detail': f"SLB | {r['instance_name'] or r['instance_id'] or ''} | {r['account_name'] or ''}".strip(' |'),
+            'page': 'publicip'
+        })
+
+    # 搜索网址大全
+    rows = query_db(
+        'SELECT id, name, url, description, category FROM web_links WHERE name LIKE ? OR url LIKE ? OR description LIKE ?',
+        (kw, kw, kw)
+    )
+    for r in rows:
+        results.append({
+            'type': '网址',
+            'type_key': 'weblink',
+            'id': r['id'],
+            'name': r['name'],
+            'detail': f"{r['url'] or ''} | {r['category'] or ''}".strip(' |'),
+            'page': 'weblinks'
+        })
+
+    return jsonify({
+        'results': results,
+        'total': len(results)
+    })
 
 
 # ---------- 资源管理 ----------
@@ -3541,13 +3898,20 @@ def _get_ram_client(account_id):
 def ram_list_users(account_id):
     """查询 RAM 用户列表（从数据库读取）"""
     try:
-        import json
+        # 获取账号的阿里云账号ID，用于构造完整的UPN
+        account_row = query_db('SELECT aliyun_account_id FROM accounts WHERE id = ?', (account_id,), one=True)
+        aliyun_account_id = account_row['aliyun_account_id'] if account_row else ''
+        
         rows = query_db('SELECT * FROM ram_users WHERE account_id = ? ORDER BY user_name', (account_id,))
         users = []
         for row in rows:
+            upn = row['user_principal_name'] or ''
+            # 如果UPN为空，尝试构造完整的UPN
+            if not upn and aliyun_account_id:
+                upn = f"{row['user_name']}@{aliyun_account_id}.onaliyun.com"
             users.append({
                 'user_name': row['user_name'],
-                'user_principal_name': row['user_principal_name'] or '',
+                'user_principal_name': upn,
                 'display_name': row['display_name'] or '',
                 'user_id': row['user_id'] or '',
                 'create_date': row['create_date'] or '',
@@ -3558,6 +3922,80 @@ def ram_list_users(account_id):
     except Exception as e:
         tb = traceback.format_exc()
         app.logger.error(f'[RAM] 查询用户列表失败: {e}\n{tb}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/accounts/<int:account_id>/ram/users/sync', methods=['POST'])
+def ram_sync_users(account_id):
+    """从阿里云 API 同步 RAM 用户列表到本地数据库"""
+    try:
+        account_row = query_db('SELECT aliyun_account_id, access_key_id, access_key_secret FROM accounts WHERE id = ?', (account_id,), one=True)
+        if not account_row:
+            return jsonify({'success': False, 'error': '账号不存在'}), 404
+        
+        aliyun_account_id = account_row['aliyun_account_id'] or ''
+        access_key_id = account_row['access_key_id']
+        access_key_secret = account_row['access_key_secret']
+        
+        if not access_key_id or not access_key_secret:
+            return jsonify({'success': False, 'error': '账号 AccessKey 未配置'}), 400
+        
+        from alibabacloud_ram20150501.client import Client as RamClient
+        from alibabacloud_tea_openapi import models as open_api_models
+        from alibabacloud_ram20150501 import models as ram_models
+        
+        config = open_api_models.Config(
+            access_key_id=access_key_id,
+            access_key_secret=access_key_secret
+        )
+        config.endpoint = 'ram.aliyuncs.com'
+        client = RamClient(config)
+        
+        req = ram_models.ListUsersRequest()
+        resp = client.list_users(req)
+        
+        users = []
+        if resp.body and resp.body.users and resp.body.users.user:
+            for u in resp.body.users.user:
+                upn = getattr(u, 'user_principal_name', '') or ''
+                if not upn and aliyun_account_id:
+                    upn = f"{u.user_name}@{aliyun_account_id}.onaliyun.com"
+                
+                access_keys = []
+                try:
+                    ak_req = ram_models.ListAccessKeysRequest(user_name=u.user_name)
+                    ak_resp = client.list_access_keys(ak_req)
+                    if ak_resp.body and ak_resp.body.access_keys and ak_resp.body.access_keys.access_key:
+                        access_keys = [ak.access_key_id for ak in ak_resp.body.access_keys.access_key]
+                except Exception:
+                    pass
+                
+                users.append({
+                    'user_name': u.user_name,
+                    'user_principal_name': upn,
+                    'display_name': u.display_name or '',
+                    'user_id': u.user_id or '',
+                    'create_date': str(u.create_date) if u.create_date else '',
+                    'comments': u.comments or '',
+                    'access_keys': access_keys,
+                })
+        
+        # 同步到本地数据库
+        execute_db('DELETE FROM ram_users WHERE account_id = ?', (account_id,))
+        for user in users:
+            execute_db(
+                '''INSERT INTO ram_users (account_id, user_name, user_principal_name, display_name, user_id, create_date, comments, access_keys)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                (account_id, user['user_name'], user['user_principal_name'], user['display_name'], 
+                 user['user_id'], user['create_date'], user['comments'], json.dumps(user['access_keys']))
+            )
+        
+        log_operation('RAM管理', '同步用户', f'同步 RAM 用户列表，共 {len(users)} 个用户', account_id=account_id, account_name=get_account_name(account_id), ip_address=get_client_ip())
+        return jsonify({'success': True, 'message': f'同步成功，共 {len(users)} 个用户', 'count': len(users)})
+    except Exception as e:
+        tb = traceback.format_exc()
+        app.logger.error(f'[RAM] 同步用户列表失败: {e}\n{tb}')
+        log_operation('RAM管理', '同步用户', '同步 RAM 用户列表失败', account_id=account_id, account_name=get_account_name(account_id), success=False, error_msg=str(e), ip_address=get_client_ip())
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -3581,7 +4019,7 @@ def ram_create_user(account_id):
             comments=comments or None
         )
         resp = client.create_user(req)
-        log_operation('RAM管理', '创建用户', f'创建 RAM 用户：{user_name}', account_id=account_id, account_name=get_account_name(account_id))
+        log_operation('RAM管理', '创建用户', f'创建 RAM 用户：{user_name}', account_id=account_id, account_name=get_account_name(account_id), ip_address=get_client_ip())
         return jsonify({
             'success': True,
             'message': f'RAM 用户 {user_name} 创建成功',
@@ -3594,7 +4032,7 @@ def ram_create_user(account_id):
     except Exception as e:
         tb = traceback.format_exc()
         app.logger.error(f'[RAM] 创建用户失败: {e}\n{tb}')
-        log_operation('RAM管理', '创建用户', f'创建 RAM 用户：{user_name}', account_id=account_id, account_name=get_account_name(account_id), success=False, error_msg=str(e))
+        log_operation('RAM管理', '创建用户', f'创建 RAM 用户：{user_name}', account_id=account_id, account_name=get_account_name(account_id), success=False, error_msg=str(e), ip_address=get_client_ip())
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -3608,12 +4046,12 @@ def ram_delete_user(account_id, user_name):
         from alibabacloud_ram20150501 import models as ram_models
         req = ram_models.DeleteUserRequest(user_name=user_name)
         client.delete_user(req)
-        log_operation('RAM管理', '删除用户', f'删除 RAM 用户：{user_name}', account_id=account_id, account_name=get_account_name(account_id))
+        log_operation('RAM管理', '删除用户', f'删除 RAM 用户：{user_name}', account_id=account_id, account_name=get_account_name(account_id), ip_address=get_client_ip())
         return jsonify({'success': True, 'message': f'RAM 用户 {user_name} 已删除'})
     except Exception as e:
         tb = traceback.format_exc()
         app.logger.error(f'[RAM] 删除用户失败: {e}\n{tb}')
-        log_operation('RAM管理', '删除用户', f'删除 RAM 用户：{user_name}', account_id=account_id, account_name=get_account_name(account_id), success=False, error_msg=str(e))
+        log_operation('RAM管理', '删除用户', f'删除 RAM 用户：{user_name}', account_id=account_id, account_name=get_account_name(account_id), success=False, error_msg=str(e), ip_address=get_client_ip())
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -3694,7 +4132,12 @@ def ram_list_policies(account_id):
 def ram_attach_policy(account_id, user_name):
     """为 RAM 用户添加权限策略"""
     # 禁止添加的高危权限
-    BLOCKED_POLICIES = ['AdministratorAccess']
+    BLOCKED_POLICIES = {
+        'AdministratorAccess': '阿里云完全管理权限，风险极高',
+        'AliyunRAMFullAccess': 'RAM 完全管理权限，可创建/删除用户和授权',
+        'AliyunRAMReadOnlyAccess': 'RAM 只读权限，可查看所有用户和权限信息',
+        'ReadOnlyAccess': '阿里云全局只读权限，可查看所有云资源信息',
+    }
     client, err = _get_ram_client(account_id)
     if err:
         return jsonify({'success': False, 'error': err}), 400
@@ -3704,9 +4147,17 @@ def ram_attach_policy(account_id, user_name):
     if not policy_name:
         return jsonify({'success': False, 'error': '策略名称不能为空'}), 400
     if policy_name in BLOCKED_POLICIES:
-        return jsonify({'success': False, 'error': f'禁止添加 {policy_name} 权限，该权限风险过高'}), 403
+        return jsonify({'success': False, 'error': f'禁止添加「{policy_name}」权限：{BLOCKED_POLICIES[policy_name]}'}), 403
     try:
         from alibabacloud_ram20150501 import models as ram_models
+        # 检查系统策略数量是否已达上限（阿里云限制每个用户最多 20 个系统策略）
+        if policy_type == 'System':
+            list_req = ram_models.ListPoliciesForUserRequest(user_name=user_name)
+            list_resp = client.list_policies_for_user(list_req)
+            policies = list_resp.body.policies.policy if list_resp.body.policies else []
+            system_count = sum(1 for p in policies if p.policy_type == 'System')
+            if system_count >= 20:
+                return jsonify({'success': False, 'error': f'该用户已拥有 {system_count} 个系统策略，达到阿里云上限（最多 20 个）。请先移除不需要的策略后再添加。'}), 409
         req = ram_models.AttachPolicyToUserRequest(
             policy_type=policy_type,
             policy_name=policy_name,
@@ -4101,7 +4552,6 @@ def monitor_get_metrics(account_id):
         
         datapoints = []
         if resp.body and resp.body.datapoints:
-            import json
             datapoints = json.loads(resp.body.datapoints)
             
         return jsonify({'success': True, 'datapoints': datapoints})
@@ -4154,7 +4604,6 @@ def monitor_get_active_alarms(account_id):
     
     try:
         from alibabacloud_cms20190101 import models as cms_models
-        import json
         
         # 方法1：使用 DescribeMetricRuleList 获取当前处于告警状态的规则
         active_alarms = []
@@ -4411,7 +4860,6 @@ def api_get_menu_order():
     row = query_db('SELECT value FROM system_settings WHERE key = ?', ('menu_order',), one=True)
     if row and row['value']:
         try:
-            import json
             order = json.loads(row['value'])
             return jsonify({'order': order})
         except:
@@ -4427,10 +4875,39 @@ def api_update_menu_order():
     if not isinstance(order, list):
         return jsonify({'error': '参数格式错误'}), 400
 
-    import json
     execute_db(
         'INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)',
         ('menu_order', json.dumps(order), datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    )
+    return jsonify({'success': True})
+
+
+# ---------- 网址大全分类顺序管理 ----------
+
+@app.route('/api/web-links/category-order', methods=['GET'])
+def api_get_weblink_category_order():
+    """获取网址大全分类顺序"""
+    row = query_db('SELECT value FROM system_settings WHERE key = ?', ('weblink_category_order',), one=True)
+    if row and row['value']:
+        try:
+            order = json.loads(row['value'])
+            return jsonify({'order': order})
+        except:
+            pass
+    return jsonify({'order': None})
+
+
+@app.route('/api/web-links/category-order', methods=['PUT'])
+def api_update_weblink_category_order():
+    """更新网址大全分类顺序"""
+    data = request.get_json()
+    order = data.get('order', [])
+    if not isinstance(order, list):
+        return jsonify({'error': '参数格式错误'}), 400
+
+    execute_db(
+        'INSERT OR REPLACE INTO system_settings (key, value, updated_at) VALUES (?, ?, ?)',
+        ('weblink_category_order', json.dumps(order), datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
     )
     return jsonify({'success': True})
 
@@ -4583,7 +5060,7 @@ def api_add_public_ip():
             (source, ip_address, remark)
         )
         source_labels_map = {r['source']: r['label'] for r in query_db('SELECT source, label FROM source_labels')}
-        log_operation('公网大全', '添加IP', f'添加{source_labels_map.get(source, source)}公网IP：{ip_address}', account_name=source_labels_map.get(source, source))
+        log_operation('公网大全', '添加IP', f'添加{source_labels_map.get(source, source)}公网IP：{ip_address}', account_name=source_labels_map.get(source, source), ip_address=get_client_ip())
         return jsonify({'success': True, 'id': last_id, 'message': '添加成功'})
     except Exception as e:
         return jsonify({'error': f'添加失败: {str(e)}'}), 500
@@ -4667,6 +5144,100 @@ def api_batch_import_public_ips():
         'errors': errors[:10],
         'message': f'导入完成：成功 {success_count} 条' + (f'，失败 {error_count} 条' if error_count else '')
     })
+
+
+# ---------- 网址大全管理 ----------
+
+@app.route('/api/web-links', methods=['GET'])
+def get_web_links():
+    """获取网址大全列表"""
+    try:
+        rows = query_db('SELECT * FROM web_links ORDER BY category, sort_order, name')
+        links = []
+        for row in rows:
+            links.append({
+                'id': row['id'],
+                'name': row['name'],
+                'url': row['url'],
+                'description': row['description'] or '',
+                'category': row['category'] or '',
+                'sort_order': row['sort_order'] or 0,
+                'created_at': row['created_at'] or '',
+                'updated_at': row['updated_at'] or ''
+            })
+        return jsonify({'success': True, 'links': links})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/web-links', methods=['POST'])
+def create_web_link():
+    """创建网址"""
+    data = request.json
+    name = data.get('name', '').strip()
+    url = data.get('url', '').strip()
+    description = data.get('description', '').strip()
+    category = data.get('category', '').strip()
+    sort_order = data.get('sort_order', 0)
+    
+    if not name or not url:
+        return jsonify({'success': False, 'error': '名称和网址不能为空'}), 400
+    
+    # 自动添加 http:// 前缀
+    if not url.startswith('http://') and not url.startswith('https://'):
+        url = 'https://' + url
+    
+    try:
+        execute_db(
+            'INSERT INTO web_links (name, url, description, category, sort_order) VALUES (?, ?, ?, ?, ?)',
+            (name, url, description, category, sort_order)
+        )
+        log_operation('网址大全', '创建网址', f'创建网址：{name}', account_name='系统', ip_address=get_client_ip())
+        return jsonify({'success': True, 'message': '网址创建成功'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/web-links/<int:link_id>', methods=['PUT'])
+def update_web_link(link_id):
+    """更新网址"""
+    data = request.json
+    name = data.get('name', '').strip()
+    url = data.get('url', '').strip()
+    description = data.get('description', '').strip()
+    category = data.get('category', '').strip()
+    sort_order = data.get('sort_order', 0)
+    
+    if not name or not url:
+        return jsonify({'success': False, 'error': '名称和网址不能为空'}), 400
+    
+    # 自动添加 http:// 前缀
+    if not url.startswith('http://') and not url.startswith('https://'):
+        url = 'https://' + url
+    
+    try:
+        execute_db(
+            'UPDATE web_links SET name=?, url=?, description=?, category=?, sort_order=?, updated_at=? WHERE id=?',
+            (name, url, description, category, sort_order, datetime.now(), link_id)
+        )
+        log_operation('网址大全', '更新网址', f'更新网址：{name}', account_name='系统', ip_address=get_client_ip())
+        return jsonify({'success': True, 'message': '网址更新成功'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/web-links/<int:link_id>', methods=['DELETE'])
+def delete_web_link(link_id):
+    """删除网址"""
+    try:
+        row = query_db('SELECT name FROM web_links WHERE id=?', (link_id,), one=True)
+        if not row:
+            return jsonify({'success': False, 'error': '网址不存在'}), 404
+        execute_db('DELETE FROM web_links WHERE id=?', (link_id,))
+        log_operation('网址大全', '删除网址', f'删除网址：{row["name"]}', account_name='系统', ip_address=get_client_ip())
+        return jsonify({'success': True, 'message': '网址删除成功'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 # ---------- 默认区域管理 ----------
@@ -4789,6 +5360,22 @@ def api_delete_log(log_id):
         return jsonify({'success': True, 'message': '日志已删除'})
     except Exception as e:
         return jsonify({'error': f'删除日志失败: {str(e)}'}), 500
+
+
+@app.route('/api/logs/batch', methods=['POST'])
+def api_batch_delete_logs():
+    """批量删除操作日志"""
+    data = request.json
+    ids = data.get('ids', [])
+    if not ids or not isinstance(ids, list):
+        return jsonify({'error': '请提供要删除的日志ID列表'}), 400
+    try:
+        placeholders = ','.join(['?' for _ in ids])
+        execute_db(f'DELETE FROM operation_logs WHERE id IN ({placeholders})', ids)
+        log_operation('系统设置', '批量删除日志', f'删除 {len(ids)} 条日志')
+        return jsonify({'success': True, 'message': f'已删除 {len(ids)} 条日志', 'count': len(ids)})
+    except Exception as e:
+        return jsonify({'error': f'批量删除失败: {str(e)}'}), 500
 
 
 @app.route('/api/logs', methods=['DELETE'])

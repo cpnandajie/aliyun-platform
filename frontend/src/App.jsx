@@ -94,6 +94,12 @@ class ErrorBoundary extends Component {
 // ==================== Toast 通知系统 ====================
 const ToastContext = createContext(null)
 
+// ==================== 菜单导航上下文 ====================
+const MenuContext = createContext(null)
+
+// ==================== 全局搜索过滤上下文 ====================
+const SearchFilterContext = createContext(null)
+
 function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([])
   const idRef = useRef(0)
@@ -206,6 +212,7 @@ function Sidebar({ activeMenu, onMenuChange }) {
     { key: 'resources', label: '资源管理', icon: '' },
     { key: 'network', label: '网络管理', icon: '' },
     { key: 'publicip', label: '公网大全', icon: '' },
+    { key: 'weblinks', label: '网址大全', icon: '' },
     { key: 'bills', label: '账单管理', icon: '' },
     { key: 'ram', label: 'RAM 管理', icon: '' },
     { key: 'dns', label: '域名管理', icon: '' },
@@ -435,16 +442,99 @@ function useConfirm() {
   return { showConfirm, confirmNode }
 }
 
+/**
+ * 账号列表加载 Hook
+ * 用法：const { accounts, setAccounts } = useAccounts()
+ */
+function useAccounts() {
+  const [accounts, setAccounts] = useState([])
+  useEffect(() => {
+    axios.get('/api/accounts').then(res => setAccounts(res.data)).catch(() => {})
+  }, [])
+  return { accounts, setAccounts }
+}
+
+/**
+ * 管理页面基础 Hook（封装 toast + confirm + accounts）
+ * 用法：const { toast, showConfirm, confirmNode, accounts } = useManagementBase()
+ */
+function useManagementBase() {
+  const toast = useToast()
+  const { showConfirm, confirmNode } = useConfirm()
+  const { accounts, setAccounts } = useAccounts()
+  return { toast, showConfirm, confirmNode, accounts, setAccounts }
+}
+
 // ==================== 通用渲染工具 ====================
 
 const nowrap = v => <span style={{ whiteSpace: 'nowrap' }}>{v}</span>
 const renderRegion = v => nowrap(REGION_LABELS[v] || v)
 
+// 高亮搜索关键词
+const highlightKeyword = (text, keyword) => {
+  if (!text || !keyword || !keyword.trim()) return text
+  const str = String(text)
+  const kw = keyword.trim()
+  const regex = new RegExp(`(${kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
+  const parts = str.split(regex)
+  return parts.map((part, i) => 
+    regex.test(part) 
+      ? <span key={i} style={{ color: '#ef4444', fontWeight: 600 }}>{part}</span>
+      : part
+  )
+}
+
+// 区域ID转短名称
+const REGION_SHORT_NAMES = {
+  'cn-hangzhou': '杭州', 'cn-shanghai': '上海', 'cn-nanjing': '南京',
+  'cn-beijing': '北京', 'cn-qingdao': '青岛', 'cn-zhangjiakou': '张家口',
+  'cn-huhehaote': '呼和浩特', 'cn-wulanchabu': '乌兰察布',
+  'cn-shenzhen': '深圳', 'cn-heyuan': '河源', 'cn-guangzhou': '广州',
+  'cn-chengdu': '成都', 'cn-hongkong': '香港',
+  'ap-southeast-1': '新加坡', 'ap-southeast-2': '悉尼', 'ap-southeast-3': '吉隆坡',
+  'ap-southeast-5': '雅加达', 'ap-southeast-6': '马尼拉', 'ap-southeast-7': '曼谷',
+  'ap-northeast-1': '东京', 'ap-northeast-2': '首尔', 'ap-south-1': '孟买',
+  'us-east-1': '弗吉尼亚', 'us-west-1': '硅谷',
+  'eu-west-1': '伦敦', 'eu-central-1': '法兰克福', 'me-east-1': '迪拜',
+}
+const formatRegion = (text) => {
+  if (!text) return text
+  const str = String(text)
+  return str.replace(/cn-[a-z]+|ap-[a-z]+-[0-9]+|us-[a-z]+-[0-9]+|eu-[a-z]+-[0-9]+|me-[a-z]+-[0-9]+/g, 
+    match => REGION_SHORT_NAMES[match] || match
+  )
+}
+
 // ==================== 资源概览页面 ====================
 function ResourceOverview() {
+  const { onMenuChange } = useContext(MenuContext)
+  const searchFilterCtx = useContext(SearchFilterContext)
   const [overview, setOverview] = useState([])
   const [loading, setLoading] = useState(false)
   const { sortKey: ovSortKey, sortDir: ovSortDir, handleSort: handleOvSort, sortArrow: ovSortArrow } = useSortable()
+
+  // 全局搜索
+  const [searchKeyword, setSearchKeyword] = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [searching, setSearching] = useState(false)
+  const [showResults, setShowResults] = useState(false)
+  const [skipAutoSearch, setSkipAutoSearch] = useState(false)
+
+  // 恢复搜索状态（从其他页面返回时）
+  useEffect(() => {
+    if (searchFilterCtx?.searchFilter?.page === 'overview') {
+      const { keyword, results } = searchFilterCtx.searchFilter
+      if (keyword) setSearchKeyword(keyword)
+      if (results) {
+        setSearchResults(results)
+        setShowResults(true)
+      }
+      // 跳过自动搜索，避免覆盖恢复的结果
+      setSkipAutoSearch(true)
+      // 清除过滤状态
+      searchFilterCtx.setSearchFilter(null)
+    }
+  }, [searchFilterCtx?.searchFilter])
 
   const loadData = useCallback(() => {
     setLoading(true)
@@ -455,6 +545,89 @@ function ResourceOverview() {
   }, [])
 
   useEffect(() => { loadData() }, [loadData])
+
+  // 实时搜索（防抖 400ms）
+  useEffect(() => {
+    // 跳过自动搜索（恢复状态时）
+    if (skipAutoSearch) {
+      setSkipAutoSearch(false)
+      return
+    }
+
+    const kw = searchKeyword.trim()
+    if (!kw) {
+      setSearchResults([])
+      setShowResults(false)
+      return
+    }
+
+    const timer = setTimeout(() => {
+      setSearching(true)
+      setShowResults(true)
+      axios.get('/api/global-search', { params: { keyword: kw } })
+        .then(res => {
+          setSearchResults(res.data.results || [])
+        })
+        .catch(err => {
+          console.error('搜索失败:', err)
+          toast.error('搜索失败: ' + (err.response?.data?.error || err.message))
+          setSearchResults([])
+        })
+        .finally(() => setSearching(false))
+    }, 400)
+
+    return () => clearTimeout(timer)
+  }, [searchKeyword, skipAutoSearch])
+
+  // 立即搜索（用于按钮和回车键）
+  const handleGlobalSearch = () => {
+    const kw = searchKeyword.trim()
+    if (!kw) {
+      setSearchResults([])
+      setShowResults(false)
+      return
+    }
+    setSearching(true)
+    setShowResults(true)
+    axios.get('/api/global-search', { params: { keyword: kw } })
+      .then(res => {
+        setSearchResults(res.data.results || [])
+      })
+      .catch(err => {
+        console.error('搜索失败:', err)
+        toast.error('搜索失败: ' + (err.response?.data?.error || err.message))
+        setSearchResults([])
+      })
+      .finally(() => setSearching(false))
+  }
+
+  const handleResultClick = (item) => {
+    // 保存搜索状态，以便返回时恢复
+    if (searchFilterCtx) {
+      searchFilterCtx.setSearchFilter({
+        page: 'overview',
+        keyword: searchKeyword,
+        results: searchResults
+      })
+    }
+    // 传递过滤信息到目标页面
+    const filter = {
+      keyword: searchKeyword,
+      type_key: item.type_key,
+      tab: item.page === 'resources' ? item.type_key : null
+    }
+    onMenuChange(item.page, filter)
+  }
+
+  // 按类型分组结果
+  const groupedResults = useMemo(() => {
+    const groups = {}
+    searchResults.forEach(r => {
+      if (!groups[r.type]) groups[r.type] = []
+      groups[r.type].push(r)
+    })
+    return groups
+  }, [searchResults])
 
   const totalEcs = overview.reduce((s, a) => s + a.ecs_count, 0)
   const totalRds = overview.reduce((s, a) => s + a.rds_count, 0)
@@ -476,6 +649,69 @@ function ResourceOverview() {
         <button className="btn-refresh" onClick={loadData} disabled={loading}>
           {loading ? '刷新中..' : '刷新'}
         </button>
+      </div>
+
+      {/* 全局搜索栏 */}
+      <div className="section-block" style={{ padding: '16px 20px' }}>
+        <div className="search-bar" style={{ marginBottom: 0 }}>
+          <input
+            type="text"
+            placeholder="全局搜索：资源名称、IP、实例ID、域名、账号..."
+            value={searchKeyword}
+            onChange={e => setSearchKeyword(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleGlobalSearch()}
+            style={{ minWidth: 360, fontSize: 14 }}
+          />
+          <button className="btn-primary" onClick={handleGlobalSearch} disabled={searching}>
+            {searching ? '搜索中..' : '搜索'}
+          </button>
+          {showResults && (
+            <button className="btn-default" onClick={() => { setShowResults(false); setSearchResults([]); setSearchKeyword('') }}>
+              清除
+            </button>
+          )}
+        </div>
+
+        {/* 搜索结果 */}
+        {showResults && (
+          <div style={{ marginTop: 16 }}>
+            {searching ? (
+              <div style={{ textAlign: 'center', color: '#94a3b8', padding: 24 }}>搜索中...</div>
+            ) : searchResults.length === 0 ? (
+              <div style={{ textAlign: 'center', color: '#94a3b8', padding: 24 }}>
+                未找到与 "<span style={{ color: '#334155', fontWeight: 500 }}>{searchKeyword}</span>" 相关的结果
+              </div>
+            ) : (
+              <>
+                <div style={{ fontSize: 13, color: '#64748b', marginBottom: 12 }}>
+                  共找到 <span style={{ color: '#6366f1', fontWeight: 600 }}>{searchResults.length}</span> 条结果
+                </div>
+                {Object.entries(groupedResults).map(([type, items]) => (
+                  <div key={type} style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#475569', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span>{type}</span>
+                      <span style={{ fontSize: 12, color: '#94a3b8', fontWeight: 400 }}>({items.length})</span>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {items.map((item, idx) => (
+                        <div
+                          key={idx}
+                          className="search-result-item"
+                          onClick={() => handleResultClick(item)}
+                        >
+                          <span style={{ fontWeight: 500, color: '#0f172a' }}>{highlightKeyword(item.name, searchKeyword)}</span>
+                          {item.detail && (
+                            <span style={{ fontSize: 12, color: '#64748b', marginLeft: 12 }}>{highlightKeyword(formatRegion(item.detail), searchKeyword)}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {/* 汇总卡片*/}
@@ -579,17 +815,39 @@ function ResourceOverview() {
 
 // ==================== 资源管理页面 ====================
 function ResourceManagement() {
-  const [activeTab, setActiveTab] = useState('ecs')
+  const searchFilterCtx = useContext(SearchFilterContext)
+  
+  // 从搜索过滤上下文初始化状态
+  const getInitialState = () => {
+    const filter = searchFilterCtx?.searchFilter
+    if (filter && filter.tab && ['ecs', 'rds', 'slb', 'oss', 'redis'].includes(filter.tab)) {
+      return {
+        activeTab: filter.tab,
+        keyword: filter.keyword || '',
+        searchKeyword: filter.keyword || ''
+      }
+    }
+    return { activeTab: 'ecs', keyword: '', searchKeyword: '' }
+  }
+  
+  const [activeTab, setActiveTab] = useState(() => getInitialState().activeTab)
   const [accounts, setAccounts] = useState([])
   const [selectedAccount, setSelectedAccount] = useState('')
-  const [keyword, setKeyword] = useState('')
-  const [searchKeyword, setSearchKeyword] = useState('')
+  const [keyword, setKeyword] = useState(() => getInitialState().keyword)
+  const [searchKeyword, setSearchKeyword] = useState(() => getInitialState().searchKeyword)
   const [statusFilter, setStatusFilter] = useState('')
   const [regionFilter, setRegionFilter] = useState('')
   const [data, setData] = useState([])
   const [loading, setLoading] = useState(false)
   const { sortKey, sortDir, setSortKey, setSortDir, handleSort, sortArrow } = useSortable()
   const [regions, setRegions] = useState([])
+
+  // 清除搜索过滤状态（已消费）
+  useEffect(() => {
+    if (searchFilterCtx?.searchFilter?.tab) {
+      searchFilterCtx.setSearchFilter(null)
+    }
+  }, [])
 
   // 各Tab的列定义（sortable标记可排序列）
   const tabColumns = {
@@ -718,11 +976,19 @@ function ResourceManagement() {
 
   // 排序后的数据
   const sortedData = (() => {
-    if (!sortKey) return data
+    const arr = [...data]
+    // 默认按创建时间倒序（新的在前）
+    if (!sortKey) {
+      const dateKey = activeTab === 'oss' ? 'creation_date' : 'created_time'
+      arr.sort((a, b) => {
+        const da = a[dateKey] || '', db = b[dateKey] || ''
+        return db.localeCompare(da) // 倒序
+      })
+      return arr
+    }
     const cols = tabColumns[activeTab]
     const col = cols.find(c => c.key === sortKey)
     if (!col || !col.sortable) return data
-    const arr = [...data]
     arr.sort((a, b) => {
       let va, vb
       if (sortKey === 'memory_gb' && activeTab === 'ecs') {
@@ -752,16 +1018,26 @@ function ResourceManagement() {
 
   const getCellContent = (item, col) => {
     if (col.key === 'memory_gb' && activeTab === 'ecs') {
-      return item.memory ? (item.memory / 1024).toFixed(item.memory % 1024 === 0 ? 0 : 1) : '-'
+      const val = item.memory ? (item.memory / 1024).toFixed(item.memory % 1024 === 0 ? 0 : 1) : '-'
+      return keyword ? highlightKeyword(val, keyword) : val
     }
     if (col.key === 'capacity' && activeTab === 'redis') {
       if (!item.capacity) return '-'
       const mb = parseFloat(item.capacity)
-      return mb < 1024 ? `${mb}M` : `${(mb / 1024).toFixed(mb % 1024 === 0 ? 0 : 1)}G`
+      const val = mb < 1024 ? `${mb}M` : `${(mb / 1024).toFixed(mb % 1024 === 0 ? 0 : 1)}G`
+      return keyword ? highlightKeyword(val, keyword) : val
     }
     const raw = item[col.key]
-    if (col.render) return col.render(raw, item)
-    return raw || '-'
+    if (col.render) {
+      const rendered = col.render(raw, item)
+      // 如果有关键词且渲染结果是字符串，应用高亮
+      if (keyword && typeof rendered === 'string') {
+        return highlightKeyword(rendered, keyword)
+      }
+      return rendered
+    }
+    const val = raw || '-'
+    return keyword ? highlightKeyword(val, keyword) : val
   }
 
   const tabs = [
@@ -882,7 +1158,7 @@ function ResourceManagement() {
           <div
             key={tab.key}
             className={`resource-tab ${activeTab === tab.key ? 'active' : ''}`}
-            onClick={() => { setActiveTab(tab.key); setKeyword(''); setSortKey(''); }}
+            onClick={() => { setActiveTab(tab.key); setSortKey(''); }}
           >
             {tab.label}
           </div>
@@ -902,9 +1178,9 @@ function ResourceManagement() {
 
 // ==================== 公网大全页面 ====================
 function PublicIPManagement() {
-  const toast = useToast()
+  const { toast, showConfirm, confirmNode, accounts } = useManagementBase()
+  const searchFilterCtx = useContext(SearchFilterContext)
   const [allIPs, setAllIPs] = useState([])
-  const [accounts, setAccounts] = useState([])
   const [loading, setLoading] = useState(false)
   const [sourceFilter, setSourceFilter] = useState('')
   const [accountFilter, setAccountFilter] = useState('')
@@ -913,7 +1189,6 @@ function PublicIPManagement() {
   const [editingIP, setEditingIP] = useState(null)
   const [formData, setFormData] = useState({ source: 'huawei', ip_address: '', remark: '' })
   const { sortKey, sortDir, handleSort, sortArrow, sortData } = useSortable()
-  const { showConfirm, confirmNode } = useConfirm()
   // 导入相关
   const importFileRef = useRef(null)
   const [importData, setImportData] = useState(null) // { items: [...], fileName: '' }
@@ -923,6 +1198,15 @@ function PublicIPManagement() {
   const [showLabelSettings, setShowLabelSettings] = useState(false)
   const [editLabels, setEditLabels] = useState([])
   const [newSourceName, setNewSourceName] = useState('')
+
+  // 读取全局搜索过滤
+  useEffect(() => {
+    if (searchFilterCtx?.searchFilter?.type_key === 'publicip') {
+      const kw = searchFilterCtx.searchFilter.keyword
+      if (kw) setKeyword(kw)
+      searchFilterCtx.setSearchFilter(null)
+    }
+  }, [searchFilterCtx?.searchFilter])
 
   const SOURCE_COLORS = {
     aliyun_eip: { bg: '#eef2ff', color: '#4f46e5', border: '#c7d2fe' },
@@ -943,7 +1227,6 @@ function PublicIPManagement() {
   useEffect(() => { loadData() }, [loadData])
 
   useEffect(() => {
-    axios.get('/api/accounts').then(res => setAccounts(res.data)).catch(() => {})
     axios.get('/api/source-labels').then(res => setSourceLabels(res.data)).catch(() => {})
   }, [])
 
@@ -1262,12 +1545,12 @@ function PublicIPManagement() {
                         {ip.source === 'aliyun_eip' || ip.source === 'aliyun_slb' ? `阿里云·${ip.source === 'aliyun_eip' ? 'EIP' : 'SLB'}` : ip.source_label}
                       </span>
                     </td>
-                    <td style={{ whiteSpace: 'nowrap' }}>{ip.account_name || '-'}</td>
-                    <td className="td-mono" style={{ fontWeight: 500 }}>{ip.ip_address}</td>
-                    <td>{ip.instance_name || '-'}</td>
-                    <td>{ip.detail || '-'}</td>
-                    <td style={{ whiteSpace: 'nowrap' }}>{REGION_LABELS[ip.region] || ip.region || '-'}</td>
-                    <td>{ip.remark || '-'}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{keyword ? highlightKeyword(ip.account_name || '-', keyword) : (ip.account_name || '-')}</td>
+                    <td className="td-mono" style={{ fontWeight: 500 }}>{keyword ? highlightKeyword(ip.ip_address, keyword) : ip.ip_address}</td>
+                    <td>{keyword ? highlightKeyword(ip.instance_name || '-', keyword) : (ip.instance_name || '-')}</td>
+                    <td>{keyword ? highlightKeyword(ip.detail || '-', keyword) : (ip.detail || '-')}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>{keyword ? highlightKeyword(REGION_LABELS[ip.region] || ip.region || '-', keyword) : (REGION_LABELS[ip.region] || ip.region || '-')}</td>
+                    <td>{keyword ? highlightKeyword(ip.remark || '-', keyword) : (ip.remark || '-')}</td>
                     <td className="td-actions">
                       {isManual ? (
                         <>
@@ -2014,6 +2297,331 @@ function BillManagement() {
   )
 }
 
+// ==================== 网址大全页面 ====================
+function WebLinksManagement() {
+  const toast = useToast()
+  const searchFilterCtx = useContext(SearchFilterContext)
+  const [links, setLinks] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [showForm, setShowForm] = useState(false)
+  const [editingLink, setEditingLink] = useState(null)
+  const [formData, setFormData] = useState({ name: '', url: '', description: '', category: '', sort_order: 0 })
+  const [categoryFilter, setCategoryFilter] = useState('')
+  const [keyword, setKeyword] = useState(() => {
+    const filter = searchFilterCtx?.searchFilter
+    if (filter && filter.keyword) return filter.keyword
+    return ''
+  })
+  const [categoryOrder, setCategoryOrder] = useState([])
+  const { showConfirm, confirmNode } = useConfirm()
+  const [editingCategory, setEditingCategory] = useState(null)
+  const [editingCategoryName, setEditingCategoryName] = useState('')
+
+  // 重命名分类：更新该分类下所有网址的 category 字段
+  const handleRenameCategory = async (oldName) => {
+    const newName = editingCategoryName.trim()
+    if (!newName || newName === oldName) {
+      setEditingCategory(null)
+      return
+    }
+    const itemsInCategory = links.filter(l => (l.category || '') === oldName)
+    try {
+      await Promise.all(itemsInCategory.map(item =>
+        axios.put(`/api/web-links/${item.id}`, { name: item.name, url: item.url, description: item.description || '', category: newName, sort_order: item.sort_order || 0 })
+      ))
+      setLinks(prev => prev.map(l => (l.category || '') === oldName ? { ...l, category: newName } : l))
+      // 同步更新分类排序顺序
+      setCategoryOrder(prev => prev.map(c => c === oldName ? newName : c))
+      toast.success(`分类已重命名为“${newName}”`)
+    } catch (err) {
+      toast.error('重命名失败: ' + (err.response?.data?.error || err.message))
+    }
+    setEditingCategory(null)
+  }
+
+  // 清除搜索过滤状态（已消费）
+  useEffect(() => {
+    if (searchFilterCtx?.searchFilter?.keyword) {
+      searchFilterCtx.setSearchFilter(null)
+    }
+  }, [])
+
+  const loadData = useCallback(() => {
+    setLoading(true)
+    axios.get('/api/web-links')
+      .then(res => {
+        if (res.data.success) setLinks(res.data.links)
+        else toast.error(res.data.error || '加载失败')
+      })
+      .catch(err => toast.error('加载失败: ' + (err.response?.data?.error || err.message)))
+      .finally(() => setLoading(false))
+  }, [])
+
+  useEffect(() => { loadData() }, [loadData])
+
+  // 获取所有分类
+  const hasUncategorized = links.some(l => !l.category)
+  const categories = [
+    ...new Set(links.map(l => l.category).filter(c => c)),
+    ...(hasUncategorized ? ['未分类'] : [])
+  ]
+
+  // 从后端加载分类顺序
+  useEffect(() => {
+    axios.get('/api/web-links/category-order')
+      .then(res => {
+        if (res.data.order) setCategoryOrder(res.data.order)
+      })
+      .catch(() => {})
+  }, [])
+
+  // 保存分类顺序到后端
+  useEffect(() => {
+    if (categoryOrder.length > 0) {
+      axios.put('/api/web-links/category-order', { order: categoryOrder }).catch(() => {})
+    }
+  }, [categoryOrder])
+
+  // 移动分类
+  const moveCategory = (cat, direction) => {
+    const sortedCats = getSortedCategories()
+    const idx = sortedCats.indexOf(cat)
+    if (idx === -1) return
+    const newIdx = direction === 'up' ? idx - 1 : idx + 1
+    if (newIdx < 0 || newIdx >= sortedCats.length) return
+    const newOrder = [...sortedCats]
+    ;[newOrder[idx], newOrder[newIdx]] = [newOrder[newIdx], newOrder[idx]]
+    setCategoryOrder(newOrder)
+  }
+
+  // 获取排序后的分类列表
+  const getSortedCategories = () => {
+    const cats = [...categories]
+    // 按 categoryOrder 排序
+    return cats.sort((a, b) => {
+      const idxA = categoryOrder.indexOf(a)
+      const idxB = categoryOrder.indexOf(b)
+      // 如果都不在 order 中，按字母排序
+      if (idxA === -1 && idxB === -1) return a.localeCompare(b)
+      // 如果只有一个在 order 中，在 order 中的排前面
+      if (idxA === -1) return 1
+      if (idxB === -1) return -1
+      return idxA - idxB
+    })
+  }
+
+  // 过滤后的链接
+  const filteredLinks = links.filter(l => {
+    if (categoryFilter && l.category !== categoryFilter) return false
+    if (keyword.trim()) {
+      const kw = keyword.trim().toLowerCase()
+      return (l.name || '').toLowerCase().includes(kw)
+        || (l.url || '').toLowerCase().includes(kw)
+        || (l.description || '').toLowerCase().includes(kw)
+        || (l.category || '').toLowerCase().includes(kw)
+    }
+    return true
+  })
+
+  // 按分类分组
+  const groupedLinks = filteredLinks.reduce((acc, link) => {
+    const cat = link.category || '未分类'
+    if (!acc[cat]) acc[cat] = []
+    acc[cat].push(link)
+    return acc
+  }, {})
+
+  const handleSubmit = () => {
+    if (!formData.name.trim() || !formData.url.trim()) {
+      toast.warning('请填写名称和网址')
+      return
+    }
+    const data = { ...formData, sort_order: parseInt(formData.sort_order) || 0 }
+    if (editingLink) {
+      axios.put(`/api/web-links/${editingLink.id}`, data)
+        .then(() => {
+          toast.success('网址更新成功')
+          setShowForm(false)
+          loadData()
+        })
+        .catch(err => toast.error('更新失败: ' + (err.response?.data?.error || err.message)))
+    } else {
+      axios.post('/api/web-links', data)
+        .then(() => {
+          toast.success('网址创建成功')
+          setShowForm(false)
+          loadData()
+        })
+        .catch(err => toast.error('创建失败: ' + (err.response?.data?.error || err.message)))
+    }
+  }
+
+  const handleEdit = (link) => {
+    setFormData({ name: link.name, url: link.url, description: link.description || '', category: link.category || '', sort_order: link.sort_order || 0 })
+    setEditingLink(link)
+    setShowForm(true)
+  }
+
+  const handleDelete = async (link) => {
+    const ok = await showConfirm(`确定要删除网址“${link.name}”吗？`)
+    if (!ok) return
+    axios.delete(`/api/web-links/${link.id}`)
+      .then(() => {
+        toast.success('网址已删除')
+        loadData()
+      })
+      .catch(err => toast.error('删除失败: ' + (err.response?.data?.error || err.message)))
+  }
+  
+  // 移动网址（调整排序）
+  const handleMoveLink = (link, direction) => {
+    const category = link.category || ''
+    const itemsInCategory = links
+      .filter(l => (l.category || '') === category)
+      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || a.id - b.id)
+    const idx = itemsInCategory.findIndex(l => l.id === link.id)
+    if (idx === -1) return
+    const newIdx = direction === 'up' ? idx - 1 : idx + 1
+    if (newIdx < 0 || newIdx >= itemsInCategory.length) return
+    // 重新分配连续排序值，然后交换两个相邻项
+    const newOrder = [...itemsInCategory]
+    ;[newOrder[idx], newOrder[newIdx]] = [newOrder[newIdx], newOrder[idx]]
+    // 找出排序值实际变化的项
+    const updates = []
+    newOrder.forEach((item, i) => {
+      const oldOrder = item.sort_order || 0
+      if (oldOrder !== i) {
+        updates.push({ id: item.id, name: item.name, url: item.url, description: item.description || '', category: item.category || '', sort_order: i })
+      }
+    })
+    if (updates.length === 0) return
+    Promise.all(updates.map(u => axios.put(`/api/web-links/${u.id}`, u)))
+      .then(() => {
+        setLinks(prevLinks => prevLinks.map(l => {
+          const upd = updates.find(u => u.id === l.id)
+          return upd ? { ...l, sort_order: upd.sort_order } : l
+        }))
+      })
+      .catch(err => toast.error('移动失败: ' + (err.response?.data?.error || err.message)))
+  }
+
+  return (
+    <div className="page-content">
+      <div className="page-header">
+        <h2>网址大全</h2>
+      </div>
+
+      <div className="search-bar">
+        <select value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}>
+          <option value="">全部分类</option>
+          {categories.map(c => (<option key={c} value={c}>{c}</option>))}
+        </select>
+        <input type="text" placeholder="搜索名称、网址、描述..." value={keyword} onChange={e => setKeyword(e.target.value)} />
+        <button className="btn-default" onClick={() => { setKeyword(''); setCategoryFilter('') }}>重置</button>
+        <button className="btn-primary" style={{ marginLeft: 'auto' }} onClick={() => { setFormData({ name: '', url: '', description: '', category: '', sort_order: 0 }); setEditingLink(null); setShowForm(true) }}>添加网址</button>
+      </div>
+
+      {showForm && (
+        <div className="modal-overlay" onClick={() => { setShowForm(false); setEditingLink(null) }}>
+          <div className="modal-content" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>{editingLink ? '编辑网址' : '添加网址'}</h3>
+              <button className="modal-close" onClick={() => { setShowForm(false); setEditingLink(null) }}>×</button>
+            </div>
+            <div className="form-grid">
+              <div className="form-item">
+                <label>名称<span className="required">*</span></label>
+                <input type="text" value={formData.name} onChange={e => setFormData(prev => ({ ...prev, name: e.target.value }))} placeholder="请输入名称" />
+              </div>
+              <div className="form-item">
+                <label>网址<span className="required">*</span></label>
+                <input type="text" value={formData.url} onChange={e => setFormData(prev => ({ ...prev, url: e.target.value }))} placeholder="请输入网址（如：https://example.com）" />
+              </div>
+              <div className="form-item">
+                <label>分类</label>
+                <input type="text" list="category-list" value={formData.category} onChange={e => setFormData(prev => ({ ...prev, category: e.target.value }))} placeholder="选择或输入分类（可选）" />
+                <datalist id="category-list">
+                  {categories.map(c => (<option key={c} value={c} />))}
+                </datalist>
+              </div>
+              <div className="form-item">
+                <label>排序</label>
+                <input type="number" value={formData.sort_order} onChange={e => setFormData(prev => ({ ...prev, sort_order: e.target.value }))} placeholder="数字越小越靠前" />
+              </div>
+              <div className="form-item" style={{ gridColumn: '1 / -1' }}>
+                <label>描述</label>
+                <input type="text" value={formData.description} onChange={e => setFormData(prev => ({ ...prev, description: e.target.value }))} placeholder="请输入描述（可选）" />
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button className="btn-default" onClick={handleSubmit}>{editingLink ? '保存' : '创建'}</button>
+              <button className="btn-default" onClick={() => { setShowForm(false); setEditingLink(null) }}>取消</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="loading-state">加载中...</div>
+      ) : filteredLinks.length === 0 ? (
+        <div className="empty-state">暂无数据，点击“添加网址”开始添加</div>
+      ) : (
+        getSortedCategories().map((category, idx, arr) => {
+          const items = (groupedLinks[category] || []).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+          if (items.length === 0) return null
+          return (
+            <div key={category} className="section-block">
+              <div className="category-header">
+                {editingCategory === category ? (
+                  <h3>
+                    <input
+                      type="text"
+                      value={editingCategoryName}
+                      onChange={e => setEditingCategoryName(e.target.value)}
+                      onBlur={() => handleRenameCategory(category)}
+                      onKeyDown={e => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setEditingCategory(null) }}
+                      autoFocus
+                      style={{ fontSize: 'inherit', fontWeight: 'inherit', width: '160px', padding: '2px 6px' }}
+                    />
+                  </h3>
+                ) : (
+                  <h3 onDoubleClick={() => { setEditingCategory(category); setEditingCategoryName(category) }}>
+                    {category} <span style={{ color: '#94a3b8', fontSize: 14, fontWeight: 'normal' }}>({items.length})</span>
+                  </h3>
+                )}
+                <div className="category-actions">
+                  <button className="btn-link" onClick={() => { setEditingCategory(category); setEditingCategoryName(category) }} title="重命名">✎</button>
+                  <button className="btn-link" onClick={() => moveCategory(category, 'up')} disabled={idx === 0} title="上移">↑</button>
+                  <button className="btn-link" onClick={() => moveCategory(category, 'down')} disabled={idx === arr.length - 1} title="下移">↓</button>
+                </div>
+              </div>
+              <div className="weblinks-grid">
+                {items.map((link, linkIdx) => (
+                  <div key={link.id} className="weblink-card">
+                    <div className="weblink-header">
+                      <a href={link.url} target="_blank" rel="noopener noreferrer" className="weblink-name">{link.name}</a>
+                      <div className="weblink-actions">
+                        <button type="button" className="btn-link" onClick={(e) => { e.stopPropagation(); handleMoveLink(link, 'up') }} disabled={linkIdx === 0} title="上移">↑</button>
+                        <button type="button" className="btn-link" onClick={(e) => { e.stopPropagation(); handleMoveLink(link, 'down') }} disabled={linkIdx === items.length - 1} title="下移">↓</button>
+                        <button type="button" className="btn-link" onClick={() => handleEdit(link)}>编辑</button>
+                        <button type="button" className="btn-link" style={{ color: '#ef4444' }} onClick={() => handleDelete(link)}>删除</button>
+                      </div>
+                    </div>
+                    <div className="weblink-url">{link.url}</div>
+                    {link.description && <div className="weblink-desc">{link.description}</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
+        })
+      )}
+
+      {confirmNode}
+    </div>
+  )
+}
+
 // ==================== 账号管理页面 ====================
 function AccountManagement() {
   const toast = useToast()
@@ -2289,7 +2897,13 @@ function AccountManagement() {
           localStorage.setItem('activeSyncTasks', JSON.stringify(savedTasks))
           pollSyncTask(res.data.task_id, (result) => {
             if (result) {
-              toast.success(result.message || '同步完成')
+              const msg = result.message || ''
+              // 解析后端返回的消息，生成友好提示
+              if (msg.includes('错误')) {
+                toast.warning(`同步完成（部分失败）：${msg}`, 6000)
+              } else {
+                toast.success(`同步已完成！${msg}`, 4000)
+              }
               loadAccounts()
             }
             setSyncingIds(prev => ({ ...prev, [accountId]: false }))
@@ -2595,12 +3209,13 @@ function AccountManagement() {
 // ==================== RAM 管理页面 ====================
 function RamManagement() {
   const toast = useToast()
+  const searchFilterCtx = useContext(SearchFilterContext)
   const [accounts, setAccounts] = useState([])
   const [selectedAccount, setSelectedAccount] = useState('all')
   const [ramUsers, setRamUsers] = useState([])
   const [loading, setLoading] = useState(false)
   const [showCreateForm, setShowCreateForm] = useState(false)
-  const [newUser, setNewUser] = useState({ user_name: '', display_name: '', comments: '' })
+  const [newUser, setNewUser] = useState({ user_name: '', display_name: '', comments: '', account_id: '' })
   // 权限管理
   const [selectedUser, setSelectedUser] = useState(null)
   const [userPolicies, setUserPolicies] = useState([])
@@ -2626,10 +3241,20 @@ function RamManagement() {
   // 确认弹框
   const { showConfirm, confirmNode } = useConfirm()
 
+  // 读取全局搜索过滤
+  useEffect(() => {
+    if (searchFilterCtx?.searchFilter?.type_key === 'ram') {
+      const kw = searchFilterCtx.searchFilter.keyword
+      if (kw) setUserKeyword(kw)
+      searchFilterCtx.setSearchFilter(null)
+    }
+  }, [searchFilterCtx?.searchFilter])
+
   const filteredUsers = ramUsers.filter(u => {
     if (!userKeyword.trim()) return true
     const kw = userKeyword.trim().toLowerCase()
     return (u.user_name || '').toLowerCase().includes(kw)
+      || (u.user_principal_name || '').toLowerCase().includes(kw)
       || (u.display_name || '').toLowerCase().includes(kw)
       || (u.comments || '').toLowerCase().includes(kw)
       || (u.access_keys || []).some(ak => ak.toLowerCase().includes(kw))
@@ -2731,17 +3356,42 @@ function RamManagement() {
 
   useEffect(() => { if (selectedAccount) loadRamUsers() }, [selectedAccount, loadRamUsers])
 
+  const [syncingRam, setSyncingRam] = useState(false)
+  const handleSyncRamUsers = () => {
+    if (selectedAccount === 'all') {
+      toast.warning('请选择具体账号后再同步')
+      return
+    }
+    setSyncingRam(true)
+    axios.post(`/api/accounts/${selectedAccount}/ram/users/sync`)
+      .then(res => {
+        if (res.data.success) {
+          toast.success(res.data.message || '同步成功')
+          loadRamUsers()
+        } else {
+          toast.error(res.data.error || '同步失败')
+        }
+      })
+      .catch(err => toast.error('同步失败: ' + (err.response?.data?.error || err.message)))
+      .finally(() => setSyncingRam(false))
+  }
+
   const handleCreateUser = () => {
     if (!newUser.user_name.trim()) {
       toast.warning('请填写用户名')
       return
     }
-    axios.post(`/api/accounts/${selectedAccount}/ram/users`, newUser)
+    const accountId = newUser.account_id || (selectedAccount !== 'all' ? selectedAccount : '')
+    if (!accountId) {
+      toast.warning('请选择所属账号')
+      return
+    }
+    axios.post(`/api/accounts/${accountId}/ram/users`, newUser)
       .then(res => {
         if (res.data.success) {
           toast.success(res.data.message)
           setShowCreateForm(false)
-          setNewUser({ user_name: '', display_name: '', comments: '' })
+          setNewUser({ user_name: '', display_name: '', comments: '', account_id: '' })
           loadRamUsers()
         } else {
           toast.error(res.data.error || '创建失败')
@@ -2946,8 +3596,11 @@ function RamManagement() {
           {loading ? '查询中..' : '搜索'}
         </button>
         <button className="btn-default" onClick={() => { setSelectedAccount('all'); setUserKeyword(''); setSelectedUser(null); setUserPolicies([]) }}>重置</button>
-        <button className="btn-primary" onClick={() => setShowCreateForm(!showCreateForm)}>
+        <button className="btn-default" onClick={() => setShowCreateForm(!showCreateForm)}>
           {showCreateForm ? '取消' : '创建用户'}
+        </button>
+        <button className="btn-default" onClick={handleSyncRamUsers} disabled={syncingRam}>
+          {syncingRam ? '同步中..' : '同步用户'}
         </button>
       </div>
 
@@ -2956,6 +3609,15 @@ function RamManagement() {
         <div className="section-block form-section">
           <h3>创建 RAM 用户</h3>
           <div className="form-grid">
+            <div className="form-item">
+              <label>所属账号<span className="required">*</span></label>
+              <select value={newUser.account_id || (selectedAccount !== 'all' ? selectedAccount : '')} onChange={e => setNewUser(prev => ({ ...prev, account_id: e.target.value }))}>
+                <option value="">请选择账号</option>
+                {accounts.map(acct => (
+                  <option key={acct.id} value={acct.id}>{acct.name}</option>
+                ))}
+              </select>
+            </div>
             <div className="form-item">
               <label>用户名<span className="required">*</span></label>
               <input type="text" value={newUser.user_name} onChange={e => setNewUser(prev => ({ ...prev, user_name: e.target.value }))} placeholder="请输入用户名" />
@@ -2971,7 +3633,7 @@ function RamManagement() {
           </div>
           <div className="form-actions">
             <button className="btn-primary" onClick={handleCreateUser}>确认创建</button>
-            <button className="btn-default" onClick={() => { setShowCreateForm(false); setNewUser({ user_name: '', display_name: '', comments: '' }) }}>取消</button>
+            <button className="btn-default" onClick={() => { setShowCreateForm(false); setNewUser({ user_name: '', display_name: '', comments: '', account_id: '' }) }}>取消</button>
           </div>
         </div>
       )}
@@ -3002,17 +3664,17 @@ function RamManagement() {
                 {filteredUsers.map(user => (
                   <Fragment key={`${user.account_id || ''}-${user.user_name}`}>
                     <tr>
-                      {selectedAccount === 'all' && <td>{user.account_name}</td>}
-                      <td>{user.user_name}</td>
-                      <td>{user.display_name || '-'}</td>
-                      <td className="td-mono">{user.user_principal_name || user.user_name}</td>
+                      {selectedAccount === 'all' && <td>{userKeyword ? highlightKeyword(user.account_name, userKeyword) : user.account_name}</td>}
+                      <td>{userKeyword ? highlightKeyword(user.user_name, userKeyword) : user.user_name}</td>
+                      <td>{userKeyword ? highlightKeyword(user.display_name || '-', userKeyword) : (user.display_name || '-')}</td>
+                      <td className="td-mono">{userKeyword ? highlightKeyword(user.user_principal_name || user.user_name, userKeyword) : (user.user_principal_name || user.user_name)}</td>
                       <td className="td-mono">
                         {user.access_keys && user.access_keys.length > 0
-                          ? user.access_keys.join(', ')
+                          ? (userKeyword ? highlightKeyword(user.access_keys.join(', '), userKeyword) : user.access_keys.join(', '))
                           : '-'}
                       </td>
                       <td style={{ whiteSpace: 'nowrap' }}>{fmtDate(user.create_date)}</td>
-                      <td>{user.comments || '-'}</td>
+                      <td>{userKeyword ? highlightKeyword(user.comments || '-', userKeyword) : (user.comments || '-')}</td>
                       <td className="td-actions">
                         <button className="btn-link" onClick={() => handleSelectUser(user.user_name, user.account_id)}>
                           {selectedUser === user.user_name ? '收起权限' : '查看权限'}
@@ -3186,6 +3848,7 @@ function RamManagement() {
 // ==================== 域名管理 ====================
 function DnsManagement() {
   const toast = useToast()
+  const searchFilterCtx = useContext(SearchFilterContext)
   const [accounts, setAccounts] = useState([])
   const [selectedAccount, setSelectedAccount] = useState('')
   const [domains, setDomains] = useState([])
@@ -3204,6 +3867,15 @@ function DnsManagement() {
   const [domainSort, setDomainSort] = useState({ field: 'end_time', order: 'asc' })
   // 确认弹框
   const { showConfirm, confirmNode } = useConfirm()
+
+  // 读取全局搜索过滤
+  useEffect(() => {
+    if (searchFilterCtx?.searchFilter?.type_key === 'dns') {
+      const kw = searchFilterCtx.searchFilter.keyword
+      if (kw) setDomainKeyword(kw)
+      searchFilterCtx.setSearchFilter(null)
+    }
+  }, [searchFilterCtx?.searchFilter])
 
   const filteredDomains = domains.filter(d => {
     const kw = domainKeyword.trim().toLowerCase()
@@ -3483,9 +4155,9 @@ function DnsManagement() {
                   <tr key={`${d.account_id || ''}-${d.domain_name}`}
                     style={{ cursor: 'pointer', background: selectedDomain === d.domain_name ? '#eef2ff' : 'transparent' }}
                     onClick={() => setSelectedDomain(d.domain_name)}>
-                    {selectedAccount === 'all' && <td style={{ color: '#64748b' }}>{d.account_name}</td>}
-                    <td>{d.domain_name}</td>
-                    <td style={{ color: '#64748b' }}>{d.holder || '-'}</td>
+                    {selectedAccount === 'all' && <td style={{ color: '#64748b' }}>{domainKeyword ? highlightKeyword(d.account_name, domainKeyword) : d.account_name}</td>}
+                    <td>{domainKeyword ? highlightKeyword(d.domain_name, domainKeyword) : d.domain_name}</td>
+                    <td style={{ color: '#64748b' }}>{domainKeyword ? highlightKeyword(d.holder || '-', domainKeyword) : (d.holder || '-')}</td>
                     <td>{d.record_count}</td>
                     <td className="td-mono" style={{ color: d.end_time && (() => { const s=String(d.end_time).trim(); const ts=/^\d{10,13}$/.test(s)?(s.length===10?Number(s)*1000:Number(s)):new Date(s).getTime(); return !isNaN(ts)&&ts<Date.now() })() ? '#ef4444' : '#334155' }}>
                       {fmtDate(d.end_time)}
@@ -3689,12 +4361,22 @@ function DnsManagement() {
 // ==================== SSL 证书管理 ====================
 function SslManagement() {
   const toast = useToast()
+  const searchFilterCtx = useContext(SearchFilterContext)
   const [accounts, setAccounts] = useState([])
   const [selectedAccount, setSelectedAccount] = useState('')
   const [certs, setCerts] = useState([])
   const [loading, setLoading] = useState(false)
   const { sortKey, sortDir, setSortKey, setSortDir, handleSort, sortArrow, sortData } = useSortable('end_date')
   const [certKeyword, setCertKeyword] = useState('')
+
+  // 读取全局搜索过滤
+  useEffect(() => {
+    if (searchFilterCtx?.searchFilter?.type_key === 'ssl') {
+      const kw = searchFilterCtx.searchFilter.keyword
+      if (kw) setCertKeyword(kw)
+      searchFilterCtx.setSearchFilter(null)
+    }
+  }, [searchFilterCtx?.searchFilter])
 
   useEffect(() => {
     axios.get('/api/accounts').then(res => {
@@ -3872,7 +4554,11 @@ function SslManagement() {
                   <tr key={`${c.account_name || ''}-${c.id || idx}`}>
                     {visibleColumns.map(col => (
                       <td key={col.key} className={col.className || ''}>
-                        {col.render ? col.render(c[col.key], c) : (c[col.key] || '-')}
+                        {col.render 
+                          ? (certKeyword && typeof col.render(c[col.key], c) === 'string' 
+                              ? highlightKeyword(col.render(c[col.key], c), certKeyword) 
+                              : col.render(c[col.key], c))
+                          : (certKeyword ? highlightKeyword(c[col.key] || '-', certKeyword) : (c[col.key] || '-'))}
                       </td>
                     ))}
                   </tr>
@@ -4479,7 +5165,8 @@ function NetworkManagement() {
     return () => clearTimeout(timer)
   }, [keyword])
 
-  useEffect(() => { setKeyword(''); setSearchKeyword(''); setRegionFilter(''); setSortKey('') }, [activeTab])
+  // 切换标签时保留搜索关键词，只重置地域过滤和排序
+  useEffect(() => { setRegionFilter(''); setSortKey('') }, [activeTab])
 
   const handleSearch = () => { setSearchKeyword(keyword) }
 
@@ -4538,7 +5225,11 @@ function NetworkManagement() {
                   <tr key={row.instance_id || i}>
                     {columns.map(col => (
                       <td key={col.key} className={col.className || ''}>
-                        {col.render ? col.render(row[col.key], row) : (row[col.key] ?? '-')}
+                        {col.render 
+                          ? (keyword && typeof col.render(row[col.key], row) === 'string' 
+                              ? highlightKeyword(col.render(row[col.key], row), keyword) 
+                              : col.render(row[col.key], row))
+                          : (keyword ? highlightKeyword(row[col.key] ?? '-', keyword) : (row[col.key] ?? '-'))}
                       </td>
                     ))}
                   </tr>
@@ -4696,8 +5387,7 @@ function SecurityEvents() {
 
 // ==================== 日志管理 ====================
 function LogManagement() {
-  const toast = useToast()
-  const [accounts, setAccounts] = useState([])
+  const { toast, showConfirm, confirmNode, accounts } = useManagementBase()
   const [logs, setLogs] = useState([])
   const [modules, setModules] = useState([])
   const [total, setTotal] = useState(0)
@@ -4710,8 +5400,8 @@ function LogManagement() {
   const today = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}` })()
   const [dateFrom, setDateFrom] = useState(today)
   const [dateTo, setDateTo] = useState(today)
-  // 确认弹框
-  const { showConfirm, confirmNode } = useConfirm()
+  // 多选
+  const [selectedIds, setSelectedIds] = useState([])
 
   const loadLogs = (p = 1) => {
     setLoading(true)
@@ -4733,15 +5423,18 @@ function LogManagement() {
   }
 
   useEffect(() => {
-    axios.get('/api/accounts').then(res => setAccounts(res.data)).catch(() => {})
     loadLogs(1)
   }, [])
 
-  const handleSearch = () => loadLogs(1)
+  const handleSearch = () => {
+    setSelectedIds([])
+    loadLogs(1)
+  }
 
   const handleReset = () => {
     setAccountId(''); setModule(''); setKeyword('')
     setDateFrom(today); setDateTo(today)
+    setSelectedIds([])
     setTimeout(() => loadLogs(1), 0)
   }
 
@@ -4759,6 +5452,42 @@ function LogManagement() {
     axios.delete(`/api/logs/${id}`)
       .then(() => { toast.success('日志已删除'); loadLogs(page) })
       .catch(err => toast.error('删除失败: ' + (err.response?.data?.error || err.message)))
+  }
+
+  const handleBatchDelete = async () => {
+    if (selectedIds.length === 0) {
+      toast.warning('请先选择要删除的日志')
+      return
+    }
+    const ok = await showConfirm(`确定删除选中的 ${selectedIds.length} 条日志？`)
+    if (!ok) return
+    axios.post('/api/logs/batch', { ids: selectedIds })
+      .then(res => {
+        if (res.data.success) {
+          toast.success(res.data.message || '批量删除成功')
+          setSelectedIds([])
+          loadLogs(page)
+        } else {
+          toast.error(res.data.error || '删除失败')
+        }
+      })
+      .catch(err => toast.error('删除失败: ' + (err.response?.data?.error || err.message)))
+  }
+
+  const handleSelectAll = (e) => {
+    if (e.target.checked) {
+      setSelectedIds(logs.map(l => l.id))
+    } else {
+      setSelectedIds([])
+    }
+  }
+
+  const handleSelectOne = (id, checked) => {
+    if (checked) {
+      setSelectedIds(prev => [...prev, id])
+    } else {
+      setSelectedIds(prev => prev.filter(i => i !== id))
+    }
   }
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
@@ -4800,6 +5529,11 @@ function LogManagement() {
           {loading ? '查询中..' : '搜索'}
         </button>
         <button className="btn-default" onClick={handleReset}>重置</button>
+        {selectedIds.length > 0 && (
+          <button className="btn-default" style={{ color: '#ef4444' }} onClick={handleBatchDelete}>
+            删除选中 ({selectedIds.length})
+          </button>
+        )}
         {/* <button className="btn-default" style={{ marginLeft: 'auto', color: '#ef4444' }} onClick={handleClear}>清空全部操作日志</button> */}
       </div>
 
@@ -4808,22 +5542,29 @@ function LogManagement() {
         <table className="data-table">
           <thead>
             <tr>
+              <th style={{ width: 40 }}>
+                <input type="checkbox" checked={logs.length > 0 && selectedIds.length === logs.length} onChange={handleSelectAll} />
+              </th>
               <th style={{ width: 160 }}>时间</th>
               <th style={{ width: 120, whiteSpace: 'nowrap' }}>账号</th>
               <th style={{ width: 100, whiteSpace: 'nowrap' }}>模块</th>
               <th style={{ width: 130, whiteSpace: 'nowrap' }}>操作</th>
               <th style={{ width: 80 }}>结果</th>
+              <th style={{ width: 130, whiteSpace: 'nowrap' }}>操作IP</th>
               <th>操作详情</th>
               <th style={{ width: 60 }}>操作</th>
             </tr>
           </thead>
           <tbody>
             {logs.length === 0 ? (
-              <tr><td colSpan="7" style={{ textAlign: 'center', color: '#94a3b8', padding: 32 }}>
+              <tr><td colSpan="9" style={{ textAlign: 'center', color: '#94a3b8', padding: 32 }}>
                 {loading ? '加载中..' : '暂无操作日志'}
               </td></tr>
             ) : logs.map(log => (
               <tr key={log.id}>
+                <td>
+                  <input type="checkbox" checked={selectedIds.includes(log.id)} onChange={e => handleSelectOne(log.id, e.target.checked)} />
+                </td>
                 <td style={{ whiteSpace: 'nowrap' }}>{fmtLogTime(log.created_at)}</td>
                 <td style={{ whiteSpace: 'nowrap' }}>{log.account_name || '-'}</td>
                 <td style={{ whiteSpace: 'nowrap' }}>{log.module || '-'}</td>
@@ -4833,6 +5574,7 @@ function LogManagement() {
                     {log.success === 1 ? '成功' : '失败'}
                   </span>
                 </td>
+                <td style={{ whiteSpace: 'nowrap', fontFamily: 'monospace', fontSize: 13, color: '#64748b' }}>{log.ip_address || '-'}</td>
                 <td>
                   {log.detail || '-'}
                   {log.success === 0 && log.error_msg && (
@@ -4868,6 +5610,7 @@ const PAGE_LABELS = {
   resources: '资源管理',
   network: '网络管理',
   publicip: '公网大全',
+  weblinks: '网址大全',
   bills: '账单管理',
   accounts: '平台设置',
   ram: 'RAM 管理',
@@ -4881,6 +5624,7 @@ const PAGE_LABELS = {
 function App() {
   const navigate = useNavigate()
   const location = useLocation()
+  const [searchFilter, setSearchFilter] = useState(null) // { keyword, type_key, tab }
 
   // 从 URL pathname 获取当前页面（HashRouter 中 pathname 是 /））
   // HashRouter 使用 location.hash，但 useLocation 返回的 pathname 在 HashRouter 中实际是 hash 路径
@@ -4892,7 +5636,8 @@ function App() {
 
   const activeMenu = getPage()
 
-  const setActiveMenu = (page) => {
+  const setActiveMenu = (page, filter = null) => {
+    setSearchFilter(filter)
     navigate('/' + page)
   }
 
@@ -4902,6 +5647,7 @@ function App() {
       case 'resources': return <ResourceManagement />
       case 'network': return <NetworkManagement />
       case 'publicip': return <PublicIPManagement />
+      case 'weblinks': return <WebLinksManagement />
       case 'bills': return <BillManagement />
       case 'accounts': return <AccountManagement />
       case 'ram': return <RamManagement />
@@ -4920,7 +5666,11 @@ function App() {
       <div className="main-area">
         <main className="content-area">
           <LoadingBar />
-          {renderPage()}
+          <MenuContext.Provider value={{ onMenuChange: setActiveMenu }}>
+            <SearchFilterContext.Provider value={{ searchFilter, setSearchFilter }}>
+              {renderPage()}
+            </SearchFilterContext.Provider>
+          </MenuContext.Provider>
         </main>
       </div>
     </div>

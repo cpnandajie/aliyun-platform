@@ -1,4 +1,23 @@
 /* ==================== 全局样式 ==================== */
+:root {
+  --primary: #6366f1;
+  --primary-dark: #4f46e5;
+  --primary-light: #818cf8;
+  --primary-bg: rgba(99,102,241,0.1);
+  --primary-border: #a5b4fc;
+  --success: #10b981;
+  --success-dark: #059669;
+  --danger: #ef4444;
+  --warning: #f59e0b;
+  --text-primary: #1e293b;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+  --border: #e2e8f0;
+  --border-light: #f1f5f9;
+  --radius: 8px;
+  --transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -410,10 +429,6 @@ body {
   text-align: center;
 }
 
-.data-table .td-mono {
-  /* 与实例名称等其他字段统一使用默认字体 */
-}
-
 .data-table .td-amount {
   font-weight: normal;
   color: inherit;
@@ -577,80 +592,66 @@ body {
 /* ==================== 按钮 ==================== */
 .btn-primary {
   padding: 10px 24px;
-  background: linear-gradient(135deg, #6366f1, #4f46e5);
+  background: linear-gradient(135deg, var(--primary), var(--primary-dark));
   color: #fff;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius);
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 2px 4px rgba(99,102,241,0.2);
+  transition: var(--transition);
+  box-shadow: 0 2px 4px var(--primary-bg);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: linear-gradient(135deg, #818cf8, #6366f1);
-  box-shadow: 0 4px 12px rgba(99,102,241,0.3);
+  background: linear-gradient(135deg, var(--primary-light), var(--primary));
+  box-shadow: 0 4px 12px var(--primary-bg);
   transform: translateY(-1px);
 }
 
 .btn-success {
   padding: 10px 24px;
-  background: linear-gradient(135deg, #10b981, #059669);
+  background: linear-gradient(135deg, var(--success), var(--success-dark));
   color: #fff;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius);
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: var(--transition);
   box-shadow: 0 2px 4px rgba(16,185,129,0.2);
 }
 
 .btn-success:hover:not(:disabled) {
-  background: linear-gradient(135deg, #34d399, #10b981);
+  background: linear-gradient(135deg, #34d399, var(--success));
   box-shadow: 0 4px 12px rgba(16,185,129,0.3);
   transform: translateY(-1px);
 }
 
-.btn-default {
-  padding: 10px 24px;
-  background: rgba(255,255,255,0.8);
-  color: #475569;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  font-size: 14px;
-  cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-  backdrop-filter: blur(4px);
-}
-
-.btn-default:hover {
-  color: #6366f1;
-  border-color: #a5b4fc;
-  background: rgba(238,242,255,0.6);
-}
-
+.btn-default,
 .btn-refresh {
   padding: 10px 24px;
   background: rgba(255,255,255,0.8);
-  color: #475569;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   font-size: 14px;
   cursor: pointer;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: var(--transition);
+  backdrop-filter: blur(4px);
 }
 
+.btn-default:hover,
 .btn-refresh:hover:not(:disabled) {
-  color: #6366f1;
-  border-color: #a5b4fc;
+  color: var(--primary);
+  border-color: var(--primary-border);
+  background: rgba(238,242,255,0.6);
 }
 
 .btn-link {
   background: none;
   border: none;
-  color: #6366f1;
+  color: var(--primary);
   cursor: pointer;
   font-size: 14px;
   padding: 4px 8px;
@@ -895,6 +896,25 @@ button:disabled {
   color: #fff;
   border-color: #6366f1;
   box-shadow: 0 2px 8px rgba(99,102,241,0.3);
+}
+
+/* ==================== 全局搜索结果 ==================== */
+.search-result-item {
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  background: rgba(255,255,255,0.7);
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-size: 14px;
+}
+
+.search-result-item:hover {
+  background: rgba(238,242,255,0.8);
+  border-color: #c7d2fe;
+  box-shadow: 0 2px 8px rgba(99,102,241,0.1);
 }
 
 /* ==================== 表格信息 ==================== */
@@ -1269,13 +1289,15 @@ button:disabled {
 /* ==================== Toast 通知 ==================== */
 .toast-container {
   position: fixed;
-  top: 24px;
-  right: 24px;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   z-index: 9999;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-width: 380px;
+  max-width: 480px;
+  min-width: 320px;
   pointer-events: none;
 }
 
@@ -1325,8 +1347,8 @@ button:disabled {
 }
 
 @keyframes toastIn {
-  from { transform: translateX(120%); opacity: 0; }
-  to   { transform: translateX(0);    opacity: 1; }
+  from { transform: scale(0.9); opacity: 0; }
+  to   { transform: scale(1);   opacity: 1; }
 }
 
 /* ==================== 确认弹框 ==================== */
@@ -1820,4 +1842,94 @@ button:disabled {
   padding: 24px;
   margin-bottom: 24px;
   border: 1px solid rgba(255,255,255,0.8);
+}
+
+/* ==================== 网址大全 ==================== */
+.weblinks-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.weblink-card {
+  background: rgba(255,255,255,0.9);
+  border-radius: 12px;
+  padding: 16px;
+  border: 1px solid rgba(226,232,240,0.8);
+  transition: all 0.2s ease;
+}
+
+.weblink-card:hover {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+  transform: translateY(-2px);
+}
+
+.weblink-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.weblink-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1e293b;
+  text-decoration: none;
+  flex: 1;
+}
+
+.weblink-name:hover {
+  color: #4f46e5;
+}
+
+.weblink-actions {
+  display: flex;
+  gap: 8px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.weblink-card:hover .weblink-actions {
+  opacity: 1;
+}
+
+.weblink-url {
+  font-size: 12px;
+  color: #64748b;
+  word-break: break-all;
+  margin-bottom: 6px;
+}
+
+.weblink-desc {
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.4;
+}
+
+.category-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.category-header h3 {
+  margin: 0;
+}
+
+.category-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.category-actions button {
+  padding: 4px 8px;
+  font-size: 14px;
+  min-width: 28px;
+}
+
+.category-actions button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
 }
