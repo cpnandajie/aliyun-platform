@@ -1664,13 +1664,22 @@ function BillManagement() {
   const [selectedBill, setSelectedBill] = useState(null)
   const [prevMonthData, setPrevMonthData] = useState({ total: 0, accounts: {}, accountDetails: {} })
   // 年度汇总
-  const [yearlyView, setYearlyView] = useState(false)
+  const [yearlyView, setYearlyView] = useState(() => sessionStorage.getItem('billView') === 'yearly')
   const [yearlyYear, setYearlyYear] = useState(new Date().getFullYear().toString())
   const [yearlyData, setYearlyData] = useState({ yearly_bills: [], monthly_trend: [], total_yearly: 0, available_years: [] })
   const [yearlySort, setYearlySort] = useState({ key: '', dir: 'asc' })
+  // 产品汇总
+  const [productSummaryView, setProductSummaryView] = useState(() => sessionStorage.getItem('billView') === 'productSummary')
+  const [productSummary, setProductSummary] = useState([])
+  const [productSummarySort, setProductSummarySort] = useState({ key: '', dir: 'asc' })
+  const [productYearly, setProductYearly] = useState(false)
+  const [productYear, setProductYear] = useState(new Date().getFullYear().toString())
+  const [productExpanded, setProductExpanded] = useState(null)
+  const [productSearch, setProductSearch] = useState('')
   const [billsSort, setBillsSort] = useState({ key: '', dir: 'asc' })
-  const [detailSort, setDetailSort] = useState({ key: '', dir: 'asc' })
-  const [hideZeroBills, setHideZeroBills] = useState(false)
+  const [detailSort, setDetailSort] = useState({ key: 'trend', dir: 'desc' })
+  const [hideZeroBills, setHideZeroBills] = useState(true)
+  const [detailSearch, setDetailSearch] = useState('')
   const [historySyncing, setHistorySyncing] = useState(false)
   const [historyStartMonth, setHistoryStartMonth] = useState('2026-01')
   const [historyMonthPickerOpen, setHistoryMonthPickerOpen] = useState(false)
@@ -1796,12 +1805,17 @@ function BillManagement() {
     const currentCycle = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
     setBillingCycle(currentCycle)
     loadData(currentCycle)
+    // 恢复页面视图时加载对应数据
+    const savedView = sessionStorage.getItem('billView')
+    if (savedView === 'productSummary') loadProductSummary(currentCycle)
+    else if (savedView === 'yearly') loadYearlyData()
   }, [])
 
   const handleCycleChange = (cycle) => {
     setBillingCycle(cycle)
     setSelectedBill(null)
     loadData(cycle)
+    if (productSummaryView) loadProductSummary(cycle)
   }
 
   const loadYearlyData = useCallback((year) => {
@@ -1816,6 +1830,49 @@ function BillManagement() {
   const handleYearChange = (year) => {
     setYearlyYear(year)
     loadYearlyData(year)
+  }
+
+  const loadProductSummary = useCallback((cycle) => {
+    setLoading(true)
+    const targetCycle = cycle || billingCycle
+    axios.get('/api/bills/product-summary', { params: { billing_cycle: targetCycle } })
+      .then(res => setProductSummary(res.data.products || []))
+      .catch(err => console.error('加载产品汇总失败', err))
+      .finally(() => setLoading(false))
+  }, [billingCycle])
+
+  const loadProductYearlySummary = useCallback((year) => {
+    setLoading(true)
+    const targetYear = year || productYear
+    axios.get('/api/bills/product-yearly-summary', { params: { year: targetYear } })
+      .then(res => setProductSummary(res.data.products || []))
+      .catch(err => console.error('加载年度产品汇总失败', err))
+      .finally(() => setLoading(false))
+  }, [productYear])
+
+  const handleProductSummarySort = (key) => {
+    setProductSummarySort(prev => prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' })
+  }
+
+  const getProductSorted = (arr) => {
+    if (!productSummarySort.key) return arr
+    const sorted = [...arr]
+    const dir = productSummarySort.dir === 'asc' ? 1 : -1
+    if (productSummarySort.key === 'discount') {
+      // 折扣排序：按 (pretax_gross - invoice_discount) / pretax_gross 比率
+      sorted.sort((a, b) => {
+        const ra = a.pretax_gross_amount > 0 ? (a.pretax_gross_amount - (a.invoice_discount || 0)) / a.pretax_gross_amount : 1
+        const rb = b.pretax_gross_amount > 0 ? (b.pretax_gross_amount - (b.invoice_discount || 0)) / b.pretax_gross_amount : 1
+        return (ra - rb) * dir
+      })
+    } else {
+      sorted.sort((a, b) => {
+        const va = a[productSummarySort.key] ?? '', vb = b[productSummarySort.key] ?? ''
+        if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * dir
+        return String(va).localeCompare(String(vb)) * dir
+      })
+    }
+    return sorted
   }
 
   const [billDetails, setBillDetails] = useState({})
@@ -1839,10 +1896,12 @@ function BillManagement() {
     setYearlySort(prev => prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' })
   }
   const handleBillsSort = (key) => {
-    setBillsSort(prev => prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' })
+    const defaultDir = key === 'trend' ? 'desc' : 'asc'
+    setBillsSort(prev => prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: defaultDir })
   }
   const handleDetailSort = (key) => {
-    setDetailSort(prev => prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' })
+    const defaultDir = key === 'trend' ? 'desc' : 'asc'
+    setDetailSort(prev => prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: defaultDir })
   }
   const sortArrowFor = (sort, key) => {
     if (sort.key !== key) return ' ↕'
@@ -1851,11 +1910,40 @@ function BillManagement() {
   const getSorted = (arr, sort) => {
     if (!sort.key) return arr
     const sorted = [...arr]
-    sorted.sort((a, b) => {
-      let va = a[sort.key] ?? '', vb = b[sort.key] ?? ''
-      if (typeof va === 'number' && typeof vb === 'number') return sort.dir === 'asc' ? va - vb : vb - va
-      return sort.dir === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va))
-    })
+    if (sort.key === 'trend') {
+      const increases = [], flats = [], decreases = []
+      for (const item of sorted) {
+        const t = item.trend ?? 0
+        if (t > 0) increases.push(item)
+        else if (t < 0) decreases.push(item)
+        else flats.push(item)
+      }
+      if (sort.dir === 'desc') {
+        // 降序：增加最多的排最上面，下降最多的排最下面
+        increases.sort((a, b) => (b.trend ?? 0) - (a.trend ?? 0))
+        decreases.sort((a, b) => Math.abs(a.trend ?? 0) - Math.abs(b.trend ?? 0))
+        return [...increases, ...flats, ...decreases]
+      } else {
+        // 升序：下降最多的排最上面，增加最多的排最下面
+        decreases.sort((a, b) => Math.abs(b.trend ?? 0) - Math.abs(a.trend ?? 0))
+        increases.sort((a, b) => (a.trend ?? 0) - (b.trend ?? 0))
+        return [...decreases, ...flats, ...increases]
+      }
+    } else if (sort.key === 'discount') {
+      // 折扣排序：按 (pretax_gross - invoice_discount) / pretax_gross 比率
+      sorted.sort((a, b) => {
+        const da = a.pretax_gross_amount > 0 ? (a.pretax_gross_amount - (a.invoice_discount || 0)) / a.pretax_gross_amount : 1
+        const db = b.pretax_gross_amount > 0 ? (b.pretax_gross_amount - (b.invoice_discount || 0)) / b.pretax_gross_amount : 1
+        return sort.dir === 'asc' ? da - db : db - da
+      })
+      return sorted
+    } else {
+      sorted.sort((a, b) => {
+        let va = a[sort.key] ?? '', vb = b[sort.key] ?? ''
+        if (typeof va === 'number' && typeof vb === 'number') return sort.dir === 'asc' ? va - vb : vb - va
+        return sort.dir === 'asc' ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va))
+      })
+    }
     return sorted
   }
 
@@ -1897,21 +1985,27 @@ function BillManagement() {
         <h2>账单管理</h2>
         <div className="header-actions">
           <button
-            className={yearlyView ? 'btn-default' : 'btn-primary'}
-            onClick={() => { setYearlyView(false) }}
+            className={!yearlyView && !productSummaryView ? 'btn-primary' : 'btn-default'}
+            onClick={() => { sessionStorage.setItem('billView', 'monthly'); setYearlyView(false); setProductSummaryView(false) }}
           >
             月度账单
           </button>
           <button
             className={yearlyView ? 'btn-primary' : 'btn-default'}
-            onClick={() => { setYearlyView(true); loadYearlyData() }}
+            onClick={() => { sessionStorage.setItem('billView', 'yearly'); setYearlyView(true); setProductSummaryView(false); loadYearlyData() }}
           >
-            年度汇总
+            年度账单
+          </button>
+          <button
+            className={productSummaryView ? 'btn-primary' : 'btn-default'}
+            onClick={() => { sessionStorage.setItem('billView', 'productSummary'); setProductSummaryView(true); setYearlyView(false); setProductYearly(false); loadProductSummary() }}
+          >
+            产品汇总
           </button>
         </div>
       </div>
 
-      {!yearlyView ? (
+      {!yearlyView && !productSummaryView ? (
       <>
       {/* 账单月份查询 */}
       <div className="section-block">
@@ -2006,11 +2100,13 @@ function BillManagement() {
               </thead>
               <tbody>
                 {(() => {
-                  // 为每个bill添加trend字段用于排序
-                  const billsWithTrend = bills.map(bill => ({
-                    ...bill,
-                    trend: bill.total_amount - (prevMonthData.accounts[bill.account_id] || 0)
-                  }))
+                  // 为每个bill添加trend字段用于排序（按变化金额）
+                  const billsWithTrend = bills.map(bill => {
+                    const hasPrev = bill.account_id in (prevMonthData.accounts || {})
+                    const prevAmount = hasPrev ? (Number(prevMonthData.accounts[bill.account_id]) || 0) : 0
+                    const curAmount = Number(bill.total_amount) || 0
+                    return { ...bill, trend: curAmount - prevAmount, isNew: !hasPrev }
+                  })
                   return getSorted(billsWithTrend, billsSort).map(bill => {
                     const sym = bill.currency === 'SGD' ? 'SGD ' : '¥'
                     const isPaidOff = (bill.unpaid_amount || 0) === 0
@@ -2034,7 +2130,7 @@ function BillManagement() {
                     {selectedBill && selectedBill.account_id === bill.account_id && (() => {
                       const cacheKey = `${bill.account_id}_${bill.billing_cycle}`
                       const details = billDetails[cacheKey]
-                      if (!details) return <tr key={`detail-${bill.account_id}`}><td colSpan="7" style={{ textAlign: 'center', padding: '20px', color: '#94a3b8' }}>加载中...</td></tr>
+                      if (!details) return <tr key={`detail-${bill.account_id}`}><td colSpan="8" style={{ textAlign: 'center', padding: '20px', color: '#94a3b8' }}>加载中...</td></tr>
                       if (details.length === 0) return null
                       // 按产品类型+产品明细合并
                       const merged = {}
@@ -2047,44 +2143,72 @@ function BillManagement() {
                             product_code: d.product_code || '-',
                             product_detail: detail,
                             after_tax_amount: 0,
+                            pretax_gross_amount: 0,
                             cash_amount: 0,
                             deduct_amount: 0,
+                            deducted_by_coupons: 0,
+                            invoice_discount: 0,
                           }
                         }
                         merged[key].after_tax_amount += parseFloat(d.after_tax_amount || d.pretax_amount || 0)
+                        const itemPretaxGross = parseFloat(d.pretax_gross_amount || 0)
+                        // 目录总价和优惠金额只统计消费项（排除退款项，即 pretax_gross < 0 的项）
+                        if (itemPretaxGross >= 0) {
+                          merged[key].pretax_gross_amount += itemPretaxGross
+                          merged[key].invoice_discount += parseFloat(d.invoice_discount || 0)
+                        }
                         merged[key].cash_amount += parseFloat(d.cash_amount || 0)
                         merged[key].deduct_amount += parseFloat(d.deduct_amount || 0)
+                        merged[key].deducted_by_coupons += parseFloat(d.deducted_by_coupons || 0)
                       })
                       const mergedList = Object.values(merged)
                       // 获取上月该账号的明细
                       const prevDetails = prevMonthData.accountDetails[bill.account_id] || {}
+                      // 搜索过滤
+                      const searchedList = detailSearch
+                        ? mergedList.filter(d => (d.product_code || '').toLowerCase().includes(detailSearch.toLowerCase()))
+                        : mergedList
                       // 过滤0金额
-                      const displayList = hideZeroBills ? mergedList.filter(d => d.after_tax_amount !== 0) : mergedList
+                      const displayList = hideZeroBills ? searchedList.filter(d => d.after_tax_amount !== 0) : searchedList
                       return (
                       <tr key={`detail-${bill.account_id}`}>
-                        <td colSpan="7" style={{ padding: 0 }}>
+                        <td colSpan="8" style={{ padding: 0 }}>
                           <div className="bill-detail-panel">
-                            <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px', borderBottom: '1px solid #e2e8f0', fontSize: 13 }}>
+                            <div style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '6px', borderBottom: '1px solid #e2e8f0', fontSize: 13, flexWrap: 'wrap' }}>
+                              <input
+                                type="text"
+                                placeholder="搜索产品代码..."
+                                value={detailSearch}
+                                onChange={e => setDetailSearch(e.target.value)}
+                                style={{ padding: '4px 8px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 140 }}
+                              />
+                              {detailSearch && (
+                                <button className="btn-default" style={{ padding: '3px 8px', fontSize: 12 }} onClick={() => setDetailSearch('')}>重置</button>
+                              )}
                               <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', color: '#64748b' }}>
                                 <input type="checkbox" checked={hideZeroBills} onChange={e => setHideZeroBills(e.target.checked)} style={{ cursor: 'pointer' }} />
                                 隐藏0金额项
                               </label>
-                              {hideZeroBills && <span style={{ color: '#9ca3af' }}>({displayList.length}/{mergedList.length})</span>}
+                              {(hideZeroBills || detailSearch) && <span style={{ color: '#9ca3af' }}>({displayList.length}/{mergedList.length})</span>}
                             </div>
                             <table className="data-table inner-table">
                               <thead>
                                 <tr>
                                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('product_code')}>产品类型{sortArrowFor(detailSort, 'product_code')}</th>
                                   <th>产品明细</th>
+                                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('pretax_gross_amount')}>目录总价{sortArrowFor(detailSort, 'pretax_gross_amount')}</th>
                                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('after_tax_amount')}>应付金额{sortArrowFor(detailSort, 'after_tax_amount')}</th>
+                                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('discount')}>折扣{sortArrowFor(detailSort, 'discount')}</th>
                                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('trend')}>环比上月{sortArrowFor(detailSort, 'trend')}</th>
                                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('cash_amount')}>现金支付额{sortArrowFor(detailSort, 'cash_amount')}</th>
                                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('deduct_amount')}>代金券抵扣{sortArrowFor(detailSort, 'deduct_amount')}</th>
+                                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('deducted_by_coupons')}>优惠券抵扣{sortArrowFor(detailSort, 'deducted_by_coupons')}</th>
+                                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleDetailSort('invoice_discount')}>优惠金额{sortArrowFor(detailSort, 'invoice_discount')}</th>
                                 </tr>
                               </thead>
                               <tbody>
                                 {displayList.length === 0 ? (
-                                  <tr><td colSpan="6" style={{ textAlign: 'center', color: '#9ca3af', padding: '20px' }}>所有产品金额均为0，已隐藏</td></tr>
+                                  <tr><td colSpan="10" style={{ textAlign: 'center', color: '#9ca3af', padding: '20px' }}>所有产品金额均为0，已隐藏</td></tr>
                                 ) : (() => {
                                   // 为每个item 添加trend字段用于排序
                                   const listWithTrend = displayList.map(d => {
@@ -2092,8 +2216,9 @@ function BillManagement() {
                                     const detail = d.product_detail || '-'
                                     const key = `${code}__${detail}`
                                     const prevItem = prevDetails[key]
-                                    const prevAmount = prevItem ? (prevItem.after_tax_amount || prevItem.pretax_amount) : 0
-                                    return { ...d, trend: d.after_tax_amount - prevAmount }
+                                    const curAmount = Number(d.after_tax_amount) || 0
+                                    const prevAmount = prevItem ? (Number(prevItem.after_tax_amount) || Number(prevItem.pretax_amount) || 0) : 0
+                                    return { ...d, trend: curAmount - prevAmount, isNew: !prevItem }
                                   })
                                   return getSorted(listWithTrend, detailSort).map((d, i) => {
                                     const code = d.product_code || '-'
@@ -2105,10 +2230,14 @@ function BillManagement() {
                                     <tr key={i}>
                                       <td style={{ fontSize: 14 }}>{d.product_code}</td>
                                       <td style={{ fontSize: 14 }}>{d.product_detail}</td>
+                                      <td className="td-amount">{sym}{fmtMoney(d.pretax_gross_amount)}</td>
                                       <td className="td-amount">{sym}{fmtMoney(d.after_tax_amount)}</td>
+                                      <td style={{ fontSize: 14, textAlign: 'right', color: d.pretax_gross_amount > 0 ? '#f59e0b' : '#94a3b8' }}>{d.pretax_gross_amount > 0 ? `${((d.pretax_gross_amount - (d.invoice_discount || 0)) / d.pretax_gross_amount * 10).toFixed(1)}折` : '-'}</td>
                                       <td>{renderDetailComparison(d.after_tax_amount, prevAmount, sym)}</td>
                                       <td className="td-amount">{sym}{fmtMoney(d.cash_amount)}</td>
                                       <td className="td-amount">{sym}{fmtMoney(d.deduct_amount)}</td>
+                                      <td className="td-amount">{sym}{fmtMoney(d.deducted_by_coupons)}</td>
+                                      <td className="td-amount">{sym}{fmtMoney(d.invoice_discount)}</td>
                                     </tr>
                                     )
                                   })
@@ -2132,7 +2261,7 @@ function BillManagement() {
 
 
       </>
-      ) : (
+      ) : yearlyView ? (
       <>
       {/* 年度汇总视图 */}
       <div className="search-bar">
@@ -2225,6 +2354,7 @@ function BillManagement() {
                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleYearlySort('yearly_paid')}>已还款金额{sortArrowFor(yearlySort, 'yearly_paid')}</th>
                   <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleYearlySort('yearly_unpaid')}>待还款金额{sortArrowFor(yearlySort, 'yearly_unpaid')}</th>
                   <th style={{ cursor: 'pointer', userSelect: 'none' }} className="td-center" onClick={() => handleYearlySort('months_count')}>账单月数{sortArrowFor(yearlySort, 'months_count')}</th>
+                  <th>更新时间</th>
                 </tr>
               </thead>
               <tbody>
@@ -2239,6 +2369,7 @@ function BillManagement() {
                     <td className="td-amount" style={{ color: amountColor }}>{sym}{fmtMoney(bill.yearly_paid || 0)}</td>
                     <td className="td-amount" style={{ color: amountColor }}>{sym}{fmtMoney(bill.yearly_unpaid || 0)}</td>
                     <td className="td-center">{bill.months_count}个月</td>
+                    <td>{fmtDate(bill.updated_at)}</td>
                   </tr>
                   )
                 })}
@@ -2247,6 +2378,202 @@ function BillManagement() {
           </div>
         </div>
       )}
+      </>
+      ) : (
+      <>
+      {/* 产品汇总视图 */}
+      <div className="section-block">
+        {/* 按月/按年切换 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+          <button
+            className={!productYearly ? 'btn-primary' : 'btn-default'}
+            onClick={() => { setProductYearly(false); loadProductSummary() }}
+          >按月汇总</button>
+          <button
+            className={productYearly ? 'btn-primary' : 'btn-default'}
+            onClick={() => { setProductYearly(true); loadProductYearlySummary() }}
+          >按年汇总</button>
+        </div>
+        {/* 月份/年份选择 */}
+        {!productYearly ? (
+          availableCycles.length > 0 && (
+            <div className="cycle-chips" style={{ marginBottom: 12 }}>
+              {availableCycles.map(cycle => (
+                <span
+                  key={cycle}
+                  className={`cycle-chip ${billingCycle === cycle ? 'active' : ''}`}
+                  onClick={() => handleCycleChange(cycle)}
+                >
+                  {cycle}
+                </span>
+              ))}
+            </div>
+          )
+        ) : (
+          <div className="cycle-chips" style={{ marginBottom: 12 }}>
+            {(yearlyData.available_years || []).map(y => (
+              <span
+                key={y}
+                className={`cycle-chip ${productYear === y ? 'active' : ''}`}
+                onClick={() => { setProductYear(y); loadProductYearlySummary(y) }}
+              >
+                {y}年
+              </span>
+            ))}
+          </div>
+        )}
+        <div style={{ padding: '8px 0', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 15, fontWeight: 600, color: '#1e293b' }}>
+            {productYearly ? `${productYear}年` : billingCycle} 产品消费汇总
+          </span>
+          <span style={{ fontSize: 13, color: '#94a3b8' }}>
+            共 {productSummary.length} 个产品
+          </span>
+          {productSummary.length > 0 && (
+            <>
+              <input
+                type="text"
+                placeholder="搜索产品代码..."
+                value={productSearch}
+                onChange={e => setProductSearch(e.target.value)}
+                style={{ marginLeft: 8, padding: '5px 10px', fontSize: 13, border: '1px solid #cbd5e1', borderRadius: 4, width: 160 }}
+              />
+              {productSearch && (
+                <button className="btn-default" style={{ padding: '5px 12px', fontSize: 13 }} onClick={() => setProductSearch('')}>重置</button>
+              )}
+              <button className="btn-default" style={{ marginLeft: 'auto', padding: '6px 16px', fontSize: 13 }} onClick={() => {
+              const grandTotal = productSummary.reduce((sum, p) => sum + (p.total_amount || 0), 0)
+              const header = ['产品代码', '产品名称', '应付总额', '占比', '折扣', '各账号明细']
+              const rows = productSummary.map(p => {
+                const pct = grandTotal !== 0 ? ((p.total_amount / grandTotal) * 100).toFixed(1) + '%' : '0.0%'
+                const pretaxGross = p.pretax_gross_amount || 0  // 目录总价
+                const invoiceDiscount = p.invoice_discount || 0  // 优惠金额
+                const discount = pretaxGross > 0 ? (((pretaxGross - invoiceDiscount) / pretaxGross) * 10).toFixed(1) + '折' : '-'
+                const acctStr = Object.entries(p.accounts || {}).sort((a, b) => b[1] - a[1]).map(([name, amt]) => `${name}: ¥${amt.toFixed(2)}`).join('、')
+                return [p.product_code, p.product_detail, p.total_amount.toFixed(2), pct, discount, acctStr]
+              })
+              const totalRow = ['', '合计', grandTotal.toFixed(2), '100.0%', '-', '']
+              const csvContent = '\uFEFF' + [header, ...rows, totalRow].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
+              const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+              const url = URL.createObjectURL(blob)
+              const a = document.createElement('a')
+              a.href = url
+              a.download = `产品汇总_${productYearly ? productYear + '年' : billingCycle}.csv`
+              a.click()
+              URL.revokeObjectURL(url)
+            }}>导出Excel</button>
+            </>
+          )}
+        </div>
+        {loading ? (
+          <div className="loading-state">加载中...</div>
+        ) : productSummary.length === 0 ? (
+          <div className="empty-state">暂无产品数据</div>
+        ) : (() => {
+          const filtered = productSearch
+            ? productSummary.filter(p => (p.product_code || '').toLowerCase().includes(productSearch.toLowerCase()))
+            : productSummary
+          const grandTotal = filtered.reduce((sum, p) => sum + (p.total_amount || 0), 0)
+          return (
+          <>
+          {productSearch && filtered.length === 0 && (
+            <div style={{ padding: '20px', textAlign: 'center', color: '#94a3b8' }}>未找到匹配「{productSearch}」的产品</div>
+          )}
+          {filtered.length > 0 && (
+          <div className="overview-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th style={{ cursor: 'pointer', userSelect: 'none' }} onClick={() => handleProductSummarySort('product_code')}>产品代码{sortArrowFor(productSummarySort, 'product_code')}</th>
+                  <th>产品名称</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none', textAlign: 'right' }} onClick={() => handleProductSummarySort('total_amount')}>应付总额{sortArrowFor(productSummarySort, 'total_amount')}</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none', textAlign: 'right' }} onClick={() => handleProductSummarySort('total_amount')}>占比{sortArrowFor(productSummarySort, 'total_amount')}</th>
+                  <th style={{ cursor: 'pointer', userSelect: 'none', textAlign: 'right' }} onClick={() => handleProductSummarySort('discount')}>折扣{sortArrowFor(productSummarySort, 'discount')}</th>
+                  <th style={{ textAlign: 'right' }}>各账号明细</th>
+                </tr>
+              </thead>
+              <tbody>
+                {getProductSorted(filtered).map((p, i) => {
+                  const acctEntries = Object.entries(p.accounts || {}).sort((a, b) => b[1] - a[1])
+                  const acctDetails = p.account_details || {}
+                  const pct = grandTotal !== 0 ? ((p.total_amount / grandTotal) * 100).toFixed(1) : '0.0'
+                  const pretaxGross = p.pretax_gross_amount || 0  // 目录总价
+                  const invoiceDiscount = p.invoice_discount || 0  // 优惠金额
+                  // 折扣 = (目录总价 - 优惠金额) / 目录总价（退款不影响折扣）
+                  const discount = pretaxGross > 0 ? (((pretaxGross - invoiceDiscount) / pretaxGross) * 10).toFixed(1) : null
+                  const pKey = `${p.product_code}__${p.product_detail}`
+                  const isExpanded = productExpanded === pKey
+                  return (
+                    <Fragment key={i}>
+                      <tr>
+                        <td style={{ fontSize: 14 }}>{p.product_code}</td>
+                        <td style={{ fontSize: 14 }}>{p.product_detail}</td>
+                        <td style={{ fontSize: 14, textAlign: 'right' }}>¥{fmtMoney(p.total_amount)}</td>
+                        <td style={{ fontSize: 14, textAlign: 'right' }}>{pct}%</td>
+                        <td style={{ fontSize: 14, textAlign: 'right', color: discount ? '#f59e0b' : '#94a3b8' }}>{discount ? `${discount}折` : '-'}</td>
+                        <td style={{ textAlign: 'right', fontSize: 13 }}>
+                          <span style={{ color: '#64748b' }}>
+                            {acctEntries.map(([name, amount], j) => (
+                              <span key={j}>
+                                {j > 0 && <span style={{ margin: '0 6px', color: '#e2e8f0' }}>|</span>}
+                                <span>{name}</span>
+                                <span style={{ marginLeft: 4, color: amount > 0 ? '#1e293b' : '#94a3b8' }}>¥{fmtMoney(amount)}</span>
+                              </span>
+                            ))}
+                          </span>
+                          {Object.keys(acctDetails).length > 0 && (
+                            <button className="btn-link" style={{ marginLeft: 8, fontSize: 12 }} onClick={() => setProductExpanded(isExpanded ? null : pKey)}>
+                              {isExpanded ? '收起' : '详情'}
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr>
+                          <td colSpan="6" style={{ padding: 0, background: '#f8fafc' }}>
+                            <div style={{ padding: '8px 16px 12px', borderBottom: '1px solid #e2e8f0' }}>
+                              <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
+                                <thead>
+                                  <tr style={{ color: '#64748b' }}>
+                                    <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500 }}>账号</th>
+                                    <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 500 }}>目录总价</th>
+                                    <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 500 }}>应付金额</th>
+                                    <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 500 }}>折扣</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {Object.entries(acctDetails)
+                                    .sort((a, b) => b[1].after_tax_amount - a[1].after_tax_amount)
+                                    .map(([name, d]) => {
+                                      const dPretaxGross = d.pretax_gross_amount || 0  // 目录总价
+                                      const dInvoiceDiscount = d.invoice_discount || 0  // 优惠金额
+                                      const dDiscount = dPretaxGross > 0 ? (((dPretaxGross - dInvoiceDiscount) / dPretaxGross) * 10).toFixed(1) : null
+                                      return (
+                                        <tr key={name} style={{ borderTop: '1px solid #f1f5f9' }}>
+                                          <td style={{ padding: '4px 8px' }}>{name}</td>
+                                          <td style={{ padding: '4px 8px', textAlign: 'right' }}>¥{fmtMoney(d.pretax_gross_amount)}</td>
+                                          <td style={{ padding: '4px 8px', textAlign: 'right', fontWeight: 500 }}>¥{fmtMoney(d.after_tax_amount)}</td>
+                                          <td style={{ padding: '4px 8px', textAlign: 'right', color: dDiscount ? '#f59e0b' : '#94a3b8' }}>{dDiscount ? `${dDiscount}折` : '-'}</td>
+                                        </tr>
+                                      )
+                                    })}
+                                </tbody>
+                              </table>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          )}
+          </>
+          )
+        })()}
+      </div>
       </>
       )}
       {/* 颜色说明 */}

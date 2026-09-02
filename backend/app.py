@@ -866,7 +866,8 @@ def create_aliyun_client(access_key_id, access_key_secret, endpoint):
 def _sync_paginated_resource(account_id, access_key_id, access_key_secret, service_type,
                              client_class, request_class, api_method,
                              parse_items, process_item, get_total=None,
-                             page_size=100, regions=None):
+                             page_size=100, regions=None,
+                             cleanup_table=None, cleanup_id_col='instance_id', id_extractor=None):
     """
     通用的分页资源同步函数
     
@@ -880,11 +881,15 @@ def _sync_paginated_resource(account_id, access_key_id, access_key_secret, servi
         get_total: 从响应中获取总数的函数 (resp) -> int，默认用 page_size 判断
         page_size: 每页大小
         regions: 区域列表，默认用 get_default_regions()
+        cleanup_table: 清理已释放资源的表名（为 None 则不清理）
+        cleanup_id_col: 表中资源ID的列名，默认 'instance_id'
+        id_extractor: 从 API 响应项中提取资源ID的函数 (item) -> str
     """
     from alibabacloud_tea_openapi import models as open_api_models
     
     total_synced = 0
     regions = regions or get_default_regions()
+    synced_ids = set() if cleanup_table and id_extractor else None
     
     for region_id in regions:
         try:
@@ -913,6 +918,12 @@ def _sync_paginated_resource(account_id, access_key_id, access_key_secret, servi
                 
                 for inst in instances:
                     try:
+                        # 收集已同步的资源ID
+                        if synced_ids is not None:
+                            try:
+                                synced_ids.add(id_extractor(inst))
+                            except Exception:
+                                pass
                         process_item(inst, region_id)
                         total_synced += 1
                     except Exception as e:
@@ -934,6 +945,22 @@ def _sync_paginated_resource(account_id, access_key_id, access_key_secret, servi
             print(f"[WARN] 同步 {service_type} {region_id} 失败: {str(e)}")
             continue
     
+    # 清理已释放的资源：删除 API 中不再返回的记录
+    if synced_ids is not None:
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute(f'SELECT {cleanup_id_col} FROM {cleanup_table} WHERE account_id = ?', (account_id,))
+            db_ids = {row[0] for row in cursor.fetchall()}
+            conn.close()
+            removed = db_ids - synced_ids
+            if removed:
+                execute_db(f'DELETE FROM {cleanup_table} WHERE account_id = ? AND {cleanup_id_col} IN ({",".join("?" * len(removed))})',
+                          [account_id] + list(removed))
+                app.logger.info(f"[资源清理] {cleanup_table}: 删除 {len(removed)} 条已释放资源")
+        except Exception as e:
+            app.logger.warning(f"[资源清理] {cleanup_table} 清理失败: {str(e)}")
+    
     return total_synced
 
 def sync_ecs(account_id, access_key_id, access_key_secret):
@@ -944,6 +971,7 @@ def sync_ecs(account_id, access_key_id, access_key_secret):
         from alibabacloud_tea_openapi import models as open_api_models
 
         total_synced = 0
+        synced_ids = set()
         for region_id in get_default_regions():
             try:
                 config = open_api_models.Config(
@@ -1006,6 +1034,7 @@ def sync_ecs(account_id, access_key_id, access_key_secret):
                                 datetime.now()
                             ))
                             total_synced += 1
+                            synced_ids.add(inst.instance_id)
                         except Exception as e:
                             print(f"[WARN] 同步ECS实例 {getattr(inst, 'instance_id', 'unknown')} 失败: {str(e)}")
                             continue
@@ -1018,6 +1047,22 @@ def sync_ecs(account_id, access_key_id, access_key_secret):
             except Exception as e:
                 print(f"[WARN] 同步ECS {region_id} 失败: {str(e)}")
                 continue
+
+        # 清理已释放的ECS实例
+        if synced_ids:
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute('SELECT instance_id FROM ecs_instances WHERE account_id = ?', (account_id,))
+                db_ids = {row[0] for row in cursor.fetchall()}
+                conn.close()
+                removed = db_ids - synced_ids
+                if removed:
+                    execute_db(f'DELETE FROM ecs_instances WHERE account_id = ? AND instance_id IN ({",".join("?" * len(removed))})',
+                              [account_id] + list(removed))
+                    app.logger.info(f"[资源清理] ecs_instances: 删除 {len(removed)} 条已释放实例")
+            except Exception as e:
+                app.logger.warning(f"[资源清理] ecs_instances 清理失败: {str(e)}")
 
         return total_synced
     except ImportError:
@@ -1036,6 +1081,7 @@ def sync_rds(account_id, access_key_id, access_key_secret):
         from alibabacloud_tea_openapi import models as open_api_models
 
         total_synced = 0
+        synced_ids = set()
         for region_id in get_default_regions():
             try:
                 config = open_api_models.Config(
@@ -1088,6 +1134,9 @@ def sync_rds(account_id, access_key_id, access_key_secret):
                                 datetime.now()
                             ))
                             total_synced += 1
+                            inst_id = getattr(inst, 'dbinstance_id', getattr(inst, 'db_instance_id', getattr(inst, 'dbinstances_id', '')))
+                            if inst_id:
+                                synced_ids.add(inst_id)
                         except Exception as e:
                             print(f"[WARN] 同步RDS实例 {getattr(inst, 'db_instance_id', getattr(inst, 'dbinstances_id', 'unknown'))} 失败: {str(e)}")
                             continue
@@ -1100,6 +1149,22 @@ def sync_rds(account_id, access_key_id, access_key_secret):
             except Exception as e:
                 print(f"[WARN] 同步RDS {region_id} 失败: {str(e)}")
                 continue
+
+        # 清理已释放的RDS实例
+        if synced_ids:
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute('SELECT instance_id FROM rds_instances WHERE account_id = ?', (account_id,))
+                db_ids = {row[0] for row in cursor.fetchall()}
+                conn.close()
+                removed = db_ids - synced_ids
+                if removed:
+                    execute_db(f'DELETE FROM rds_instances WHERE account_id = ? AND instance_id IN ({",".join("?" * len(removed))})',
+                              [account_id] + list(removed))
+                    app.logger.info(f"[资源清理] rds_instances: 删除 {len(removed)} 条已释放实例")
+            except Exception as e:
+                app.logger.warning(f"[资源清理] rds_instances 清理失败: {str(e)}")
 
         return total_synced
     except ImportError:
@@ -1144,7 +1209,8 @@ def sync_slb(account_id, access_key_id, access_key_secret):
         return _sync_paginated_resource(
             account_id, access_key_id, access_key_secret, 'slb',
             SlbClient, slb_models.DescribeLoadBalancersRequest, 'describe_load_balancers',
-            parse_items, process_item, get_total
+            parse_items, process_item, get_total,
+            cleanup_table='slb_instances', id_extractor=lambda inst: inst.load_balancer_id
         )
     except ImportError:
         print("[ERROR] SLB SDK未安装")
@@ -1160,6 +1226,7 @@ def sync_oss(account_id, access_key_id, access_key_secret):
         import oss2
 
         total_synced = 0
+        synced_ids = set()
         try:
             auth = oss2.Auth(access_key_id, access_key_secret)
             service = oss2.Service(auth, f'https://{get_api_endpoint("oss", account_id)}')
@@ -1185,11 +1252,28 @@ def sync_oss(account_id, access_key_id, access_key_secret):
                         datetime.now()
                     ))
                     total_synced += 1
+                    synced_ids.add(bucket.name)
                 except Exception as e:
                     print(f"[WARN] 同步Bucket {bucket.name} 失败: {str(e)}")
                     continue
         except Exception as e:
             print(f"[WARN] 同步OSS失败: {str(e)}")
+
+        # 清理已删除的Bucket
+        if synced_ids:
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute('SELECT bucket_name FROM oss_buckets WHERE account_id = ?', (account_id,))
+                db_ids = {row[0] for row in cursor.fetchall()}
+                conn.close()
+                removed = db_ids - synced_ids
+                if removed:
+                    execute_db(f'DELETE FROM oss_buckets WHERE account_id = ? AND bucket_name IN ({",".join("?" * len(removed))})',
+                              [account_id] + list(removed))
+                    app.logger.info(f"[资源清理] oss_buckets: 删除 {len(removed)} 条已删除Bucket")
+            except Exception as e:
+                app.logger.warning(f"[资源清理] oss_buckets 清理失败: {str(e)}")
 
         return total_synced
     except ImportError:
@@ -1240,7 +1324,8 @@ def sync_redis(account_id, access_key_id, access_key_secret):
         return _sync_paginated_resource(
             account_id, access_key_id, access_key_secret, 'redis',
             KvstoreClient, kvstore_models.DescribeInstancesRequest, 'describe_instances',
-            parse_items, process_item, get_total
+            parse_items, process_item, get_total,
+            cleanup_table='redis_instances', id_extractor=lambda inst: inst.instance_id
         )
     except ImportError:
         print("[ERROR] Redis SDK未安装")
@@ -1277,7 +1362,8 @@ def sync_vpc(account_id, access_key_id, access_key_secret):
         return _sync_paginated_resource(
             account_id, access_key_id, access_key_secret, 'vpc',
             VpcClient, vpc_models.DescribeVpcsRequest, 'describe_vpcs',
-            parse_items, process_item, get_total, page_size=50
+            parse_items, process_item, get_total, page_size=50,
+            cleanup_table='vpc_instances', id_extractor=lambda inst: inst.vpc_id
         )
     except ImportError:
         print("[ERROR] VPC SDK未安装")
@@ -1295,6 +1381,7 @@ def sync_vswitch(account_id, access_key_id, access_key_secret):
         from alibabacloud_tea_openapi import models as open_api_models
 
         total_synced = 0
+        synced_ids = set()
         for region_id in get_default_regions():
             try:
                 config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
@@ -1330,6 +1417,8 @@ def sync_vswitch(account_id, access_key_id, access_key_secret):
                             datetime.now()
                         ))
                         total_synced += 1
+                        if vs_id:
+                            synced_ids.add(vs_id)
 
                     total_count = resp.body.total_count or 0
                     if page_number * 50 >= total_count:
@@ -1339,6 +1428,22 @@ def sync_vswitch(account_id, access_key_id, access_key_secret):
                 print(f"[WARN] 同步交换机 {region_id} 失败: {str(e)}")
                 continue
         print(f"[INFO] 交换机同步完成，共同步 {total_synced} 条")
+        # 清理已释放的交换机
+        if synced_ids:
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute('SELECT instance_id FROM vswitch_instances WHERE account_id = ?', (account_id,))
+                db_ids = {row[0] for row in cursor.fetchall()}
+                conn.close()
+                removed = db_ids - synced_ids
+                if removed:
+                    execute_db(f'DELETE FROM vswitch_instances WHERE account_id = ? AND instance_id IN ({",".join("?" * len(removed))})',
+                              [account_id] + list(removed))
+                    app.logger.info(f"[资源清理] vswitch_instances: 删除 {len(removed)} 条已释放交换机")
+            except Exception as e:
+                app.logger.warning(f"[资源清理] vswitch_instances 清理失败: {str(e)}")
+
         return total_synced
     except ImportError:
         print("[ERROR] VPC SDK未安装")
@@ -1356,6 +1461,7 @@ def sync_eip(account_id, access_key_id, access_key_secret):
         from alibabacloud_tea_openapi import models as open_api_models
 
         total_synced = 0
+        synced_ids = set()
         for region_id in get_default_regions():
             try:
                 config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
@@ -1382,6 +1488,7 @@ def sync_eip(account_id, access_key_id, access_key_secret):
                             datetime.now()
                         ))
                         total_synced += 1
+                        synced_ids.add(eip.allocation_id)
 
                     total_count = resp.body.total_count or 0
                     if page_number * 50 >= total_count:
@@ -1390,6 +1497,21 @@ def sync_eip(account_id, access_key_id, access_key_secret):
             except Exception as e:
                 print(f"[WARN] 同步EIP {region_id} 失败: {str(e)}")
                 continue
+        # 清理已释放的EIP
+        if synced_ids:
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute('SELECT instance_id FROM eip_instances WHERE account_id = ?', (account_id,))
+                db_ids = {row[0] for row in cursor.fetchall()}
+                conn.close()
+                removed = db_ids - synced_ids
+                if removed:
+                    execute_db(f'DELETE FROM eip_instances WHERE account_id = ? AND instance_id IN ({",".join("?" * len(removed))})',
+                              [account_id] + list(removed))
+                    app.logger.info(f"[资源清理] eip_instances: 删除 {len(removed)} 条已释放EIP")
+            except Exception as e:
+                app.logger.warning(f"[资源清理] eip_instances 清理失败: {str(e)}")
         return total_synced
     except ImportError:
         print("[ERROR] VPC SDK未安装")
@@ -1407,6 +1529,7 @@ def sync_nat(account_id, access_key_id, access_key_secret):
         from alibabacloud_tea_openapi import models as open_api_models
 
         total_synced = 0
+        synced_ids = set()
         for region_id in get_default_regions():
             try:
                 config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
@@ -1432,6 +1555,7 @@ def sync_nat(account_id, access_key_id, access_key_secret):
                             datetime.now()
                         ))
                         total_synced += 1
+                        synced_ids.add(nat.nat_gateway_id)
 
                     total_count = resp.body.total_count or 0
                     if page_number * 50 >= total_count:
@@ -1440,6 +1564,21 @@ def sync_nat(account_id, access_key_id, access_key_secret):
             except Exception as e:
                 print(f"[WARN] 同步NAT {region_id} 失败: {str(e)}")
                 continue
+        # 清理已释放的NAT网关
+        if synced_ids:
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute('SELECT instance_id FROM nat_instances WHERE account_id = ?', (account_id,))
+                db_ids = {row[0] for row in cursor.fetchall()}
+                conn.close()
+                removed = db_ids - synced_ids
+                if removed:
+                    execute_db(f'DELETE FROM nat_instances WHERE account_id = ? AND instance_id IN ({",".join("?" * len(removed))})',
+                              [account_id] + list(removed))
+                    app.logger.info(f"[资源清理] nat_instances: 删除 {len(removed)} 条已释放NAT网关")
+            except Exception as e:
+                app.logger.warning(f"[资源清理] nat_instances 清理失败: {str(e)}")
         return total_synced
     except ImportError:
         print("[ERROR] VPC SDK未安装")
@@ -1783,11 +1922,35 @@ def _compute_details_summary(bill_items):
         detail = d.get('product_detail') or d.get('product_type') or '-'
         key = f'{code}__{detail}'
         if key not in merged:
-            merged[key] = {'after_tax_amount': 0, 'cash_amount': 0, 'deduct_amount': 0, 'outstanding_amount': 0}
+            merged[key] = {'after_tax_amount': 0, 'pretax_amount': 0, 'pretax_gross_amount': 0, 'invoice_discount': 0, 'deducted_by_coupons': 0, 'cash_amount': 0, 'deduct_amount': 0, 'outstanding_amount': 0}
         merged[key]['after_tax_amount'] += float(d.get('after_tax_amount') or d.get('pretax_amount') or 0)
+        item_pretax_gross = float(d.get('pretax_gross_amount') or 0)
+        item_invoice_discount = float(d.get('invoice_discount') or 0)
+        # 目录总价和优惠金额只统计消费项（排除退款项，即 pretax_gross < 0 的项）
+        if item_pretax_gross >= 0:
+            merged[key]['pretax_gross_amount'] += item_pretax_gross
+            merged[key]['invoice_discount'] += item_invoice_discount
+        # deducted_by_coupons = 优惠券抵扣
+        merged[key]['deducted_by_coupons'] += float(d.get('deducted_by_coupons') or 0)
         merged[key]['cash_amount'] += float(d.get('cash_amount') or 0)
         merged[key]['deduct_amount'] += float(d.get('deduct_amount') or 0)
         merged[key]['outstanding_amount'] += float(d.get('outstanding_amount') or 0)
+    # 回退与折扣计算
+    for key, vals in merged.items():
+        # 如果目录总价为0，回退使用优惠后金额或实际应付
+        if vals['pretax_gross_amount'] == 0:
+            if vals['pretax_amount'] > 0:
+                vals['pretax_gross_amount'] = vals['pretax_amount']
+            elif vals['after_tax_amount'] > 0:
+                vals['pretax_gross_amount'] = vals['after_tax_amount']
+        # pretax_amount = 本来应付 = 目录总价 - 优惠金额（不包含优惠券抵扣和退款）
+        if vals['pretax_gross_amount'] > 0 and vals['invoice_discount'] > 0:
+            vals['pretax_amount'] = max(0, round(vals['pretax_gross_amount'] - vals['invoice_discount'], 2))
+        elif vals['pretax_gross_amount'] > 0:
+            vals['pretax_amount'] = vals['pretax_gross_amount']
+        # 如果 pretax_amount 仍为 0，使用 after_tax_amount
+        if vals['pretax_amount'] == 0 and vals['after_tax_amount'] > 0:
+            vals['pretax_amount'] = vals['after_tax_amount']
     return merged
 
 
@@ -1876,13 +2039,24 @@ def sync_bill(account_id, access_key_id, access_key_secret, billing_month=None):
                         app.logger.info(f"[账单调试] Item {idx} 属性值: {attrs}")
                     
                     # 阿里云 BSS API 字段：
-                    # PretaxAmount = 税前金额（定价币种，默认USD）
+                    # PretaxGrossAmount = 原始金额（目录总价）✅
+                    # PretaxAmount = 应付金额（折扣后）
                     # AfterTaxAmount = 税后金额（本地付款币种）✅
-                    # PretaxAmountLocal = 本地货币税前金额
+                    # InvoiceDiscount = 优惠金额
                     pretax = float(str(getattr(item, 'pretax_amount', 0) or 0).replace(',', '') or 0)
+                    # 目录总价（原始金额，折扣前）
+                    pretax_gross_raw = getattr(item, 'pretax_gross_amount', None)
+                    pretax_gross = float(str(pretax_gross_raw or 0).replace(',', '') or 0)
+                    # 如果没有 pretax_gross_amount，回退使用 pretax_amount
+                    if pretax_gross == 0 and pretax > 0:
+                        pretax_gross = pretax
                     tax = float(str(getattr(item, 'tax_amount', 0) or 0).replace(',', '') or 0)
                     cash_amount = float(str(getattr(item, 'cash_amount', 0) or 0).replace(',', '') or 0)
                     deduct_amount = float(str(getattr(item, 'deduct_amount', 0) or 0).replace(',', '') or 0)
+                    # 优惠券抵扣
+                    deducted_by_coupons = float(str(getattr(item, 'deducted_by_coupons', 0) or 0).replace(',', '') or 0)
+                    # 优惠金额（折扣优惠金额）
+                    invoice_discount = float(str(getattr(item, 'invoice_discount', 0) or 0).replace(',', '') or 0)
                     # 未结清金额（待还款）
                     outstanding_amount = float(str(getattr(item, 'outstanding_amount', 0) or 0).replace(',', '') or 0)
                     
@@ -1895,7 +2069,7 @@ def sync_bill(account_id, access_key_id, access_key_secret, billing_month=None):
                         after_tax_amount = pretax + tax
                     
                     if idx < 3:
-                        app.logger.info(f"[账单调试] pretax={pretax}, tax={tax}, after_tax_raw={after_tax_raw}, final={after_tax_amount}")
+                        app.logger.info(f"[账单调试] pretax_gross={pretax_gross}, pretax={pretax}, invoice_discount={invoice_discount}, tax={tax}, after_tax_raw={after_tax_raw}, final={after_tax_amount}")
                     
                     item_dict = {
                         'billing_cycle': getattr(item, 'billing_cycle', ''),
@@ -1903,7 +2077,10 @@ def sync_bill(account_id, access_key_id, access_key_secret, billing_month=None):
                         'product_type': getattr(item, 'product_type', ''),
                         'product_detail': getattr(item, 'product_detail', ''),
                         'deduct_amount': deduct_amount,
+                        'deducted_by_coupons': deducted_by_coupons,
+                        'invoice_discount': invoice_discount,
                         'pretax_amount': pretax,
+                        'pretax_gross_amount': pretax_gross,
                         'tax_amount': tax,
                         'after_tax_amount': after_tax_amount,
                         'cash_amount': cash_amount,
@@ -2881,13 +3058,22 @@ def _run_history_bills_sync(task_id, account_id, acct_name, ak, sk, start_month)
                             app.logger.info(f"[历史账单调试] Item {item_idx} 属性值: {attrs}")
                         
                         # 阿里云 BSS API 字段：
-                        # PretaxAmount = 税前金额（定价币种，默认USD）
+                        # PretaxGrossAmount = 原始金额（目录总价）✅
+                        # PretaxAmount = 应付金额（折扣后）
                         # AfterTaxAmount = 税后金额（本地付款币种）✅
-                        # PretaxAmountLocal = 本地货币税前金额
                         pretax = float(str(getattr(item, 'pretax_amount', 0) or 0).replace(',', '') or 0)
+                        # 目录总价（原始金额，折扣前）
+                        pretax_gross_raw = getattr(item, 'pretax_gross_amount', None)
+                        pretax_gross = float(str(pretax_gross_raw or 0).replace(',', '') or 0)
+                        if pretax_gross == 0 and pretax > 0:
+                            pretax_gross = pretax
                         tax = float(str(getattr(item, 'tax_amount', 0) or 0).replace(',', '') or 0)
                         cash_amount = float(str(getattr(item, 'cash_amount', 0) or 0).replace(',', '') or 0)
                         deduct_amount = float(str(getattr(item, 'deduct_amount', 0) or 0).replace(',', '') or 0)
+                        # 优惠券抵扣
+                        deducted_by_coupons = float(str(getattr(item, 'deducted_by_coupons', 0) or 0).replace(',', '') or 0)
+                        # 优惠金额（折扣优惠金额）
+                        invoice_discount = float(str(getattr(item, 'invoice_discount', 0) or 0).replace(',', '') or 0)
                         # 未结清金额（待还款）
                         outstanding_amount = float(str(getattr(item, 'outstanding_amount', 0) or 0).replace(',', '') or 0)
                         
@@ -2900,7 +3086,7 @@ def _run_history_bills_sync(task_id, account_id, acct_name, ak, sk, start_month)
                             after_tax_amount = pretax + tax
                         
                         if item_idx < 3:
-                            app.logger.info(f"[历史账单调试] pretax={pretax}, tax={tax}, after_tax_raw={after_tax_raw}, final={after_tax_amount}")
+                            app.logger.info(f"[历史账单调试] pretax_gross={pretax_gross}, pretax={pretax}, tax={tax}, after_tax_raw={after_tax_raw}, final={after_tax_amount}")
                         
                         item_dict = {
                             'billing_cycle': getattr(item, 'billing_cycle', ''),
@@ -2908,7 +3094,10 @@ def _run_history_bills_sync(task_id, account_id, acct_name, ak, sk, start_month)
                             'product_type': getattr(item, 'product_type', ''),
                             'product_detail': getattr(item, 'product_detail', ''),
                             'deduct_amount': deduct_amount,
+                            'deducted_by_coupons': deducted_by_coupons,
+                            'invoice_discount': invoice_discount,
                             'pretax_amount': pretax,
+                            'pretax_gross_amount': pretax_gross,
                             'tax_amount': tax,
                             'after_tax_amount': after_tax_amount,
                             'cash_amount': cash_amount,
@@ -3681,6 +3870,9 @@ def api_get_bills():
         
         bill['paid_amount'] = round(paid, 2)
         bill['unpaid_amount'] = round(bill['total_amount'] - paid, 2)
+        # 计算目录总价（pretax_gross_amount 之和）
+        pretax_total = sum(v.get('pretax_gross_amount', 0) or 0 for v in summary.values())
+        bill['pretax_total'] = round(pretax_total, 2)
         # 不返回 details 和 details_summary，减少响应数据量
         del bill['details']
         if 'details_summary' in bill:
@@ -3754,6 +3946,141 @@ def api_get_bill_summary():
     return jsonify(summary)
 
 
+@app.route('/api/bills/product-summary', methods=['GET'])
+def api_get_product_summary():
+    """获取指定月份所有账号的产品消费汇总"""
+    billing_cycle = request.args.get('billing_cycle', datetime.now().strftime('%Y-%m'))
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT mb.details_summary, mb.account_id, a.name as account_name
+        FROM monthly_bills mb
+        JOIN accounts a ON mb.account_id = a.id
+        WHERE mb.billing_cycle = ?
+          AND (a.currency IS NULL OR a.currency = 'CNY')
+    ''', (billing_cycle,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    # 按 product_code__product_detail 跨账号聚合
+    products = {}
+    for row in rows:
+        summary = None
+        if row['details_summary']:
+            try:
+                summary = json.loads(row['details_summary'])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if not summary:
+            continue
+
+        for key, vals in summary.items():
+            amount = float(vals.get('after_tax_amount', 0) or 0)
+            pretax = float(vals.get('pretax_amount', 0) or 0)  # 优惠后金额
+            pretax_gross = float(vals.get('pretax_gross_amount', 0) or 0)  # 目录总价
+            invoice_discount = float(vals.get('invoice_discount', 0) or 0)  # 优惠金额
+            if key not in products:
+                parts = key.split('__', 1)
+                products[key] = {
+                    'product_code': parts[0],
+                    'product_detail': parts[1] if len(parts) > 1 else '-',
+                    'total_amount': 0,
+                    'pretax_amount': 0,
+                    'pretax_gross_amount': 0,
+                    'invoice_discount': 0,
+                    'accounts': {},
+                    'account_details': {}
+                }
+            products[key]['total_amount'] += amount
+            products[key]['pretax_amount'] += pretax
+            products[key]['pretax_gross_amount'] += pretax_gross
+            products[key]['invoice_discount'] += invoice_discount
+            products[key]['accounts'][row['account_name']] = round(amount, 2)
+            products[key]['account_details'][row['account_name']] = {
+                'after_tax_amount': round(amount, 2),
+                'pretax_amount': round(pretax, 2),
+                'pretax_gross_amount': round(pretax_gross, 2),
+                'invoice_discount': round(invoice_discount, 2)
+            }
+
+    # 排序：金额从大到小
+    result = sorted(products.values(), key=lambda x: abs(x['total_amount']), reverse=True)
+    for item in result:
+        item['total_amount'] = round(item['total_amount'], 2)
+        item['pretax_amount'] = round(item['pretax_amount'], 2)
+        item['pretax_gross_amount'] = round(item['pretax_gross_amount'], 2)
+        item['invoice_discount'] = round(item['invoice_discount'], 2)
+
+    return jsonify({'billing_cycle': billing_cycle, 'products': result})
+
+
+@app.route('/api/bills/product-yearly-summary', methods=['GET'])
+def api_get_product_yearly_summary():
+    """获取指定年度所有账号的产品消费汇总"""
+    year = request.args.get('year', str(datetime.now().year))
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT mb.details_summary, mb.account_id, a.name as account_name
+        FROM monthly_bills mb
+        JOIN accounts a ON mb.account_id = a.id
+        WHERE mb.billing_cycle LIKE ?
+          AND (a.currency IS NULL OR a.currency = 'CNY')
+    ''', (f'{year}-%',))
+    rows = cursor.fetchall()
+    conn.close()
+
+    products = {}
+    for row in rows:
+        summary = None
+        if row['details_summary']:
+            try:
+                summary = json.loads(row['details_summary'])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if not summary:
+            continue
+
+        for key, vals in summary.items():
+            amount = float(vals.get('after_tax_amount', 0) or 0)
+            pretax = float(vals.get('pretax_amount', 0) or 0)  # 本来应付（目录总价-优惠金额）
+            pretax_gross = float(vals.get('pretax_gross_amount', 0) or 0)  # 目录总价
+            invoice_discount = float(vals.get('invoice_discount', 0) or 0)  # 优惠金额
+            if key not in products:
+                parts = key.split('__', 1)
+                products[key] = {
+                    'product_code': parts[0],
+                    'product_detail': parts[1] if len(parts) > 1 else '-',
+                    'total_amount': 0,
+                    'pretax_amount': 0,
+                    'pretax_gross_amount': 0,
+                    'invoice_discount': 0,
+                    'accounts': {},
+                    'account_details': {}
+                }
+            products[key]['total_amount'] += amount
+            products[key]['pretax_amount'] += pretax
+            products[key]['pretax_gross_amount'] += pretax_gross
+            products[key]['invoice_discount'] += invoice_discount
+            products[key]['accounts'][row['account_name']] = round(products[key]['accounts'].get(row['account_name'], 0) + amount, 2)
+            acct_detail = products[key]['account_details'].setdefault(row['account_name'], {'after_tax_amount': 0, 'pretax_amount': 0, 'pretax_gross_amount': 0, 'invoice_discount': 0})
+            acct_detail['after_tax_amount'] = round(acct_detail['after_tax_amount'] + amount, 2)
+            acct_detail['pretax_amount'] = round(acct_detail['pretax_amount'] + pretax, 2)
+            acct_detail['pretax_gross_amount'] = round(acct_detail['pretax_gross_amount'] + pretax_gross, 2)
+            acct_detail['invoice_discount'] = round(acct_detail['invoice_discount'] + invoice_discount, 2)
+
+    result = sorted(products.values(), key=lambda x: abs(x['total_amount']), reverse=True)
+    for item in result:
+        item['total_amount'] = round(item['total_amount'], 2)
+        item['pretax_amount'] = round(item['pretax_amount'], 2)
+        item['pretax_gross_amount'] = round(item['pretax_gross_amount'], 2)
+        item['invoice_discount'] = round(item['invoice_discount'], 2)
+
+    return jsonify({'year': year, 'products': result})
+
+
 @app.route('/api/bills/yearly', methods=['GET'])
 def api_get_yearly_bills():
     """获取年度账单汇总"""
@@ -3764,7 +4091,8 @@ def api_get_yearly_bills():
     cursor.execute('''
         SELECT mb.account_id, a.name as account_name, a.currency,
                SUM(mb.total_amount) as yearly_amount,
-               COUNT(DISTINCT mb.billing_cycle) as months_count
+               COUNT(DISTINCT mb.billing_cycle) as months_count,
+               MAX(mb.updated_at) as updated_at
         FROM monthly_bills mb
         LEFT JOIN accounts a ON mb.account_id = a.id
         WHERE mb.billing_cycle LIKE ?
