@@ -300,6 +300,20 @@ def init_db():
         cursor.execute('ALTER TABLE monthly_bills ADD COLUMN details_summary TEXT')
     except Exception:
         pass  # 列已存在
+    # 腾讯云账单表
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tencent_monthly_bills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            billing_cycle TEXT NOT NULL,
+            total_amount REAL DEFAULT 0,
+            details_summary TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(account_id, billing_cycle),
+            FOREIGN KEY (account_id) REFERENCES accounts(id)
+        )
+    ''')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_tencent_bills_cycle ON tencent_monthly_bills(billing_cycle)')
     # 账号余额表
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS account_balance (
@@ -483,6 +497,8 @@ def init_db():
             cursor.execute('ALTER TABLE accounts ADD COLUMN aliyun_account_id TEXT')
         if 'aliyun_account_name' not in columns:
             cursor.execute('ALTER TABLE accounts ADD COLUMN aliyun_account_name TEXT')
+        if 'provider' not in columns:
+            cursor.execute("ALTER TABLE accounts ADD COLUMN provider TEXT DEFAULT 'aliyun'")
         conn.commit()
         conn.close()
     except Exception:
@@ -522,6 +538,10 @@ def init_db():
             cursor.execute('ALTER TABLE accounts ADD COLUMN balance_threshold REAL DEFAULT 20000')
         if 'currency' not in columns:
             cursor.execute("ALTER TABLE accounts ADD COLUMN currency TEXT DEFAULT 'CNY'")
+        if 'balance' not in columns:
+            cursor.execute('ALTER TABLE accounts ADD COLUMN balance REAL DEFAULT 0')
+        if 'credit_group' not in columns:
+            cursor.execute("ALTER TABLE accounts ADD COLUMN credit_group TEXT DEFAULT ''")
         conn.commit()
         conn.close()
     except Exception:
@@ -534,6 +554,18 @@ def init_db():
         columns = [col[1] for col in cursor.fetchall()]
         if 'ip_address' not in columns:
             cursor.execute('ALTER TABLE operation_logs ADD COLUMN ip_address TEXT')
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    # 检查ssl_certificates表有renewal_status列（续费标签）
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(ssl_certificates)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'renewal_status' not in columns:
+            cursor.execute("ALTER TABLE ssl_certificates ADD COLUMN renewal_status TEXT DEFAULT ''")
         conn.commit()
         conn.close()
     except Exception:
@@ -732,6 +764,7 @@ def get_api_endpoint(service, account_id):
     国内站(CNY)使用 business.aliyuncs.com 格式
     """
     currency = get_account_currency(account_id)
+    print(f"[DEBUG] get_api_endpoint - 服务: {service}, 账号ID: {account_id}, 币种: {currency}")
     if currency == 'SGD':
         # 国际站端点
         endpoints = {
@@ -747,6 +780,7 @@ def get_api_endpoint(service, account_id):
             'sts': 'sts.ap-southeast-1.aliyuncs.com',
             'ram': 'ram.alibabacloud.com',
             'cms': 'metrics.ap-southeast-1.aliyuncs.com',
+            'cas': 'cas.ap-southeast-1.aliyuncs.com',
         }
     else:
         # 国内站端点
@@ -763,6 +797,7 @@ def get_api_endpoint(service, account_id):
             'sts': 'sts.aliyuncs.com',
             'ram': 'ram.aliyuncs.com',
             'cms': 'metrics.aliyuncs.com',
+            'cas': 'cas.aliyuncs.com',
         }
     return endpoints.get(service, f'{service}.aliyuncs.com')
 
@@ -1600,15 +1635,40 @@ def sync_ram_users(account_id, access_key_id, access_key_secret):
         config.endpoint = 'ram.aliyuncs.com'
         client = RamClient(config)
 
+        # 获取账号别名（域名别名）
+        account_alias = None
+        try:
+            alias_resp = client.get_account_alias()
+            if alias_resp.body and alias_resp.body.account_alias:
+                account_alias = alias_resp.body.account_alias
+                print(f"[INFO] 检测到账号别名: {account_alias}")
+        except Exception as e:
+            print(f"[WARNING] 获取账号别名失败: {str(e)}")
+
         # 获取用户列表
         req = ram_models.ListUsersRequest()
         resp = client.list_users(req)
         users = []
         if resp.body and resp.body.users and resp.body.users.user:
             for u in resp.body.users.user:
+                upn = getattr(u, 'user_principal_name', '') or ''
+                
+                # 如果UPN为空或有账号别名，构造完整的UPN
+                if not upn:
+                    # UPN为空，使用别名或数字ID构造
+                    domain = account_alias or aliyun_account_id
+                    if domain:
+                        upn = f"{u.user_name}@{domain}.onaliyun.com"
+                elif account_alias:
+                    # UPN不为空但有别名，替换数字ID为别名
+                    parts = upn.split('@')
+                    if len(parts) == 2:
+                        username = parts[0]
+                        upn = f"{username}@{account_alias}.onaliyun.com"
+                
                 users.append({
                     'user_name': u.user_name,
-                    'user_principal_name': getattr(u, 'user_principal_name', '') or '',
+                    'user_principal_name': upn,
                     'display_name': u.display_name,
                     'user_id': u.user_id,
                     'create_date': str(u.create_date) if u.create_date else '',
@@ -1735,7 +1795,9 @@ def sync_ssl_certificates(account_id, access_key_id, access_key_secret):
         from alibabacloud_tea_openapi import models as open_api_models
 
         config = open_api_models.Config(access_key_id=access_key_id, access_key_secret=access_key_secret)
-        config.endpoint = 'cas.aliyuncs.com'
+        endpoint = get_api_endpoint('cas', account_id)
+        config.endpoint = endpoint
+        print(f"[INFO] SSL证书同步 - 账号ID: {account_id}, 使用端点: {endpoint}")
         client = CasClient(config)
 
         certs = []
@@ -1765,7 +1827,10 @@ def sync_ssl_certificates(account_id, access_key_id, access_key_secret):
                         return ''
 
                     cert_id = str(_pick(raw, 'CertificateId', 'Id', 'id'))
-                    if cert_id and cert_id in seen_ids:
+                    # 如果 cert_id 为空，跳过该证书
+                    if not cert_id:
+                        continue
+                    if cert_id in seen_ids:
                         continue
                     seen_ids.add(cert_id)
 
@@ -1807,7 +1872,13 @@ def sync_ssl_certificates(account_id, access_key_id, access_key_secret):
 
                     cert_id = str(_pick2(raw, 'CertificateId', 'certificate_id'))
                     instance_id = str(_pick2(raw, 'InstanceId', 'instance_id'))
-                    if cert_id and cert_id in seen_ids:
+                    # 如果 cert_id 为空，使用 instance_id 作为备选
+                    if not cert_id:
+                        cert_id = instance_id
+                    # 如果仍然为空，跳过该证书
+                    if not cert_id:
+                        continue
+                    if cert_id in seen_ids:
                         continue
                     seen_ids.add(cert_id)
 
@@ -1833,13 +1904,25 @@ def sync_ssl_certificates(account_id, access_key_id, access_key_secret):
         except Exception as e:
             print(f'[WARN] SSL V2.0 查询失败: {e}')
 
+        # 保存旧的续费状态
+        old_renewal = {}
+        try:
+            old_rows = query_db('SELECT cert_id, renewal_status FROM ssl_certificates WHERE account_id = ?', (account_id,))
+            for row in old_rows:
+                if row['renewal_status']:
+                    old_renewal[row['cert_id']] = row['renewal_status']
+        except Exception:
+            pass
+
         # 清空旧数据并插入新数据
         execute_db('DELETE FROM ssl_certificates WHERE account_id = ?', (account_id,))
         for c in certs:
+            # 恢复之前的续费状态
+            renewal = old_renewal.get(c['cert_id'], '')
             execute_db('''
-                INSERT INTO ssl_certificates (account_id, cert_id, name, domain, status, start_date, end_date, cert_type, issuer, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (account_id, c['cert_id'], c['name'], c['domain'], c['status'], c['start_date'], c['end_date'], c['cert_type'], c['issuer'], datetime.now()))
+                INSERT INTO ssl_certificates (account_id, cert_id, name, domain, status, start_date, end_date, cert_type, issuer, renewal_status, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (account_id, c['cert_id'], c['name'], c['domain'], c['status'], c['start_date'], c['end_date'], c['cert_type'], c['issuer'], renewal, datetime.now()))
 
         print(f"[INFO] SSL证书同步完成: {len(certs)}个")
         return len(certs)
@@ -2117,6 +2200,145 @@ def sync_bill(account_id, access_key_id, access_key_secret, billing_month=None):
     except Exception as e:
         print(f"[ERROR] 同步账号 {acct_name} 账单失败: {str(e)}")
         return []
+
+
+def sync_tencent_bill(account_id, secret_id, secret_key, billing_month=None):
+    """同步腾讯云账单数据
+    billing_month: 指定月份，格式 YYYY-MM，默认为当月
+    """
+    try:
+        from tencentcloud.common import credential
+        from tencentcloud.billing.v20180709 import billing_client, models as billing_models
+
+        acct_name = get_account_name(account_id)
+        if not billing_month:
+            now = datetime.now()
+            billing_month = f'{now.year}-{str(now.month).zfill(2)}'
+
+        # 解析年月
+        year, month = billing_month.split('-')
+
+        cred = credential.Credential(secret_id, secret_key)
+        # 腾讯云账单API使用ap-guangzhou区域
+        client = billing_client.BillingClient(cred, "ap-guangzhou")
+
+        all_items = []
+        offset = 0
+        limit = 100
+        while True:
+            try:
+                req = billing_models.DescribeBillDetailRequest()
+                req.Month = billing_month
+                req.Offset = offset
+                req.Limit = limit
+                req.NeedRecordNum = 1
+                resp = client.DescribeBillDetail(req)
+                if resp and resp.DetailSet:
+                    for item in resp.DetailSet:
+                        product_code = getattr(item, 'BusinessCodeName', '') or getattr(item, 'BusinessCode', '') or '-'
+                        product_name = getattr(item, 'ProductCodeName', '') or getattr(item, 'ProductCode', '') or '-'
+                        
+                        # 腾讯云的费用在 ComponentSet 组件列表中
+                        total_cost = 0
+                        total_original = 0
+                        total_discount = 0
+                        if hasattr(item, 'ComponentSet') and item.ComponentSet:
+                            for comp in item.ComponentSet:
+                                cost = float(getattr(comp, 'RealCost', 0) or 0)
+                                original = float(getattr(comp, 'Cost', 0) or 0)
+                                discount = original - cost
+                                total_cost += cost
+                                total_original += original
+                                total_discount += discount
+                        
+                        all_items.append({
+                            'product_code': product_code,
+                            'product_detail': product_name,
+                            'after_tax_amount': total_cost,
+                            'pretax_amount': total_cost,
+                            'pretax_gross_amount': total_original,
+                            'invoice_discount': total_discount,
+                        })
+                total = getattr(resp, 'Total', 0) or 0
+                offset += limit
+                if offset >= total or not resp.DetailSet:
+                    break
+            except Exception as e:
+                app.logger.warning(f"[腾讯云账单] {acct_name} {billing_month} 获取明细失败(offset={offset}): {str(e)}")
+                break
+
+        if not all_items:
+            app.logger.info(f"[腾讯云账单] {acct_name} {billing_month} 无账单数据")
+            return []
+
+        # 计算汇总
+        total_amount = sum(float(item.get('after_tax_amount', 0) or 0) for item in all_items)
+
+        # 按产品类型合并明细
+        merged = {}
+        for d in all_items:
+            code = d.get('product_code') or '-'
+            detail = d.get('product_detail') or '-'
+            key = f'{code}__{detail}'
+            if key not in merged:
+                merged[key] = {'after_tax_amount': 0, 'pretax_amount': 0, 'pretax_gross_amount': 0, 'invoice_discount': 0}
+            merged[key]['after_tax_amount'] += float(d.get('after_tax_amount') or 0)
+            merged[key]['pretax_amount'] += float(d.get('pretax_amount') or 0)
+            merged[key]['pretax_gross_amount'] += float(d.get('pretax_gross_amount') or 0)
+            merged[key]['invoice_discount'] += float(d.get('invoice_discount') or 0)
+        # 四舍五入
+        for key, vals in merged.items():
+            for k in vals:
+                vals[k] = round(vals[k], 2)
+
+        # 存储到数据库
+        execute_db('''
+            INSERT OR REPLACE INTO tencent_monthly_bills
+            (account_id, billing_cycle, total_amount, details_summary, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (account_id, billing_month, round(total_amount, 2),
+              json.dumps(merged, ensure_ascii=False), datetime.now()))
+
+        app.logger.info(f"[腾讯云账单] {acct_name} {billing_month} 同步成功，金额: {round(total_amount, 2)}")
+        return [billing_month]
+
+    except ImportError:
+        print("[ERROR] 腾讯云SDK未安装，请运行 pip install tencentcloud-sdk-python")
+        return []
+    except Exception as e:
+        print(f"[ERROR] 同步腾讯云账单失败: {str(e)}")
+        app.logger.error(f"[腾讯云账单] 同步失败: {str(e)}")
+        return []
+
+
+def sync_tencent_balance(account_id, secret_id, secret_key):
+    """同步腾讯云账户余额"""
+    try:
+        from tencentcloud.common import credential
+        from tencentcloud.billing.v20180709 import billing_client, models as billing_models
+
+        acct_name = get_account_name(account_id)
+        cred = credential.Credential(secret_id, secret_key)
+        client = billing_client.BillingClient(cred, "ap-guangzhou")
+
+        req = billing_models.DescribeAccountBalanceRequest()
+        resp = client.DescribeAccountBalance(req)
+        
+        # 余额字段是 Balance（单位：分）
+        balance_cent = getattr(resp, 'Balance', 0) or 0
+        balance = balance_cent / 100.0  # 转换为元
+        
+        # 存储到数据库
+        execute_db('''
+            UPDATE accounts SET balance = ?, updated_at = ? WHERE id = ?
+        ''', (balance, datetime.now(), account_id))
+        
+        app.logger.info(f"[腾讯云余额] {acct_name} 同步成功，余额: {balance}")
+        return balance
+
+    except Exception as e:
+        app.logger.error(f"[腾讯云余额] 同步失败: {str(e)}")
+        return None
 
 
 def sync_balance(account_id, access_key_id, access_key_secret):
@@ -2650,7 +2872,7 @@ def api_get_accounts():
     """获取所有账号列表"""
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute('SELECT id, name, access_key_id, remark, created_at, updated_at, last_sync_at, aliyun_account_id, aliyun_account_name, balance_threshold, currency FROM accounts ORDER BY id')
+    cursor.execute('SELECT id, name, access_key_id, remark, created_at, updated_at, last_sync_at, aliyun_account_id, aliyun_account_name, balance_threshold, currency, provider, credit_group FROM accounts ORDER BY id')
     accounts = []
     for row in cursor.fetchall():
         acct = dict(row)
@@ -2680,14 +2902,18 @@ def api_add_account():
     currency = data.get('currency', 'CNY').strip() or 'CNY'
     if currency not in ('CNY', 'SGD'):
         currency = 'CNY'
+    provider = data.get('provider', 'aliyun').strip() or 'aliyun'
+    if provider not in ('aliyun', 'tencent'):
+        provider = 'aliyun'
+    credit_group = data.get('credit_group', '').strip()
 
     if not name or not access_key_id or not access_key_secret:
         return jsonify({'error': '请填写账号名称、AccessKey ID和AccessKey Secret'}), 400
 
     try:
         last_id = execute_db(
-            'INSERT INTO accounts (name, access_key_id, access_key_secret, remark, balance_threshold, currency) VALUES (?, ?, ?, ?, ?, ?)',
-            (name, access_key_id, access_key_secret, remark, balance_threshold, currency)
+            'INSERT INTO accounts (name, access_key_id, access_key_secret, remark, balance_threshold, currency, provider, credit_group) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            (name, access_key_id, access_key_secret, remark, balance_threshold, currency, provider, credit_group)
         )
         log_operation('账号管理', '添加账号', f'新增账号：{name}', account_id=last_id, account_name=name, ip_address=get_client_ip())
         return jsonify({'success': True, 'id': last_id, 'message': '账号添加成功'})
@@ -2707,6 +2933,7 @@ def api_delete_account(account_id):
         execute_db('DELETE FROM oss_buckets WHERE account_id = ?', (account_id,))
         execute_db('DELETE FROM redis_instances WHERE account_id = ?', (account_id,))
         execute_db('DELETE FROM monthly_bills WHERE account_id = ?', (account_id,))
+        execute_db('DELETE FROM tencent_monthly_bills WHERE account_id = ?', (account_id,))
         execute_db('DELETE FROM account_balance WHERE account_id = ?', (account_id,))
         execute_db('DELETE FROM accounts WHERE id = ?', (account_id,))
         log_operation('账号管理', '删除账号', f'删除账号：{acct_name}', account_id=account_id, account_name=acct_name, ip_address=get_client_ip())
@@ -2735,6 +2962,10 @@ def api_update_account(account_id):
     currency = data.get('currency', 'CNY').strip() or 'CNY'
     if currency not in ('CNY', 'SGD'):
         currency = 'CNY'
+    provider = data.get('provider', 'aliyun').strip() or 'aliyun'
+    if provider not in ('aliyun', 'tencent'):
+        provider = 'aliyun'
+    credit_group = data.get('credit_group', '').strip()
 
     # 验证必填字段
     if not name:
@@ -2748,14 +2979,18 @@ def api_update_account(account_id):
         if not current:
             return jsonify({'error': '账号不存在'}), 404
         
+        # 如果 AccessKey ID 包含脱敏字符 ****，保留原来的值
+        if '****' in access_key_id:
+            access_key_id = current['access_key_id']
+        
         # 如果 AccessKey Secret 为空，保留原来的值
         if not access_key_secret:
             access_key_secret = current['access_key_secret']
         
         execute_db('''
-            UPDATE accounts SET name=?, access_key_id=?, access_key_secret=?, remark=?, balance_threshold=?, currency=?, updated_at=?
+            UPDATE accounts SET name=?, access_key_id=?, access_key_secret=?, remark=?, balance_threshold=?, currency=?, provider=?, credit_group=?, updated_at=?
             WHERE id=?
-        ''', (name, access_key_id, access_key_secret, remark, balance_threshold, currency, datetime.now(), account_id))
+        ''', (name, access_key_id, access_key_secret, remark, balance_threshold, currency, provider, credit_group, datetime.now(), account_id))
         log_operation('账号管理', '更新账号', f'更新账号：{name}', account_id=account_id, account_name=name, ip_address=get_client_ip())
         return jsonify({'success': True, 'message': '账号更新成功'})
     except Exception as e:
@@ -3182,8 +3417,8 @@ def api_get_overview():
     conn = get_db()
     cursor = conn.cursor()
 
-    # 获取所有账号
-    cursor.execute('SELECT id, name, remark, aliyun_account_id, balance_threshold, currency FROM accounts ORDER BY id')
+    # 获取所有阿里云账号（排除腾讯云）
+    cursor.execute('SELECT id, name, remark, aliyun_account_id, balance_threshold, currency, credit_group FROM accounts WHERE provider != "tencent" OR provider IS NULL ORDER BY id')
     accounts = [dict(row) for row in cursor.fetchall()]
 
     current_month = datetime.now().strftime('%Y-%m')
@@ -3231,12 +3466,40 @@ def api_get_overview():
             'available_amount': round(balance_row['available_amount'], 2) if balance_row else 0,
             'available_cash': round(balance_row['available_cash'], 2) if balance_row else 0,
             'credit_amount': round(balance_row['credit_amount'], 2) if balance_row else 0,
-            'balance_threshold': acct.get('balance_threshold') or 20000,
+            'balance_threshold': acct.get('balance_threshold') if acct.get('balance_threshold') is not None else 20000,
             'currency': acct.get('currency') or 'CNY',
+            'credit_group': acct.get('credit_group') or '',
         })
+    
+    # 计算每个信用额度分组的汇总信息（按货币分组）
+    credit_groups = {}
+    for item in overview:
+        group = item['credit_group']
+        currency = item['currency']
+        if group:  # 只处理有分组的账号
+            # 使用 group + currency 作为唯一键
+            key = f"{group}_{currency}"
+            if key not in credit_groups:
+                credit_groups[key] = {
+                    'group_name': group,
+                    'currency': currency,
+                    'total_credit': 0,  # 总信用额度
+                    'total_available': 0,  # 总可用额度
+                    'total_cash': 0,  # 总现金额度
+                    'total_used': 0,  # 总已用额度
+                    'accounts': []  # 分组内的账号列表
+                }
+            credit_groups[key]['total_available'] += item['available_amount']
+            credit_groups[key]['total_cash'] += item['available_cash']
+            credit_groups[key]['total_credit'] += item['credit_amount']
+            credit_groups[key]['total_used'] += item['month_amount']
+            credit_groups[key]['accounts'].append(item['account_name'])
 
     conn.close()
-    return jsonify(overview)
+    return jsonify({
+        'overview': overview,
+        'credit_groups': list(credit_groups.values())
+    })
 
 
 # ---------- 全局搜索 ----------
@@ -4171,6 +4434,130 @@ def api_get_yearly_bills():
     })
 
 
+# ---------- 腾讯云账单 ----------
+
+@app.route('/api/tencent/bills', methods=['GET'])
+def api_get_tencent_bills():
+    """获取腾讯云账单"""
+    billing_cycle = request.args.get('billing_cycle', datetime.now().strftime('%Y-%m'))
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT tmb.*, a.name as account_name
+        FROM tencent_monthly_bills tmb
+        JOIN accounts a ON tmb.account_id = a.id
+        WHERE a.provider = 'tencent'
+          AND tmb.billing_cycle = ?
+        ORDER BY a.name
+    ''', (billing_cycle,))
+    bills = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+
+    # 解析 details_summary
+    for bill in bills:
+        if bill.get('details_summary'):
+            try:
+                bill['details_summary'] = json.loads(bill['details_summary'])
+            except (json.JSONDecodeError, TypeError):
+                bill['details_summary'] = {}
+        else:
+            bill['details_summary'] = {}
+
+    total_amount = sum(b['total_amount'] for b in bills)
+
+    # 获取可用月份
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT DISTINCT tmb.billing_cycle
+        FROM tencent_monthly_bills tmb
+        JOIN accounts a ON tmb.account_id = a.id
+        WHERE a.provider = 'tencent'
+        ORDER BY tmb.billing_cycle DESC
+    ''')
+    available_cycles = [row['billing_cycle'] for row in cursor.fetchall()]
+    conn.close()
+
+    return jsonify({
+        'bills': bills,
+        'total_amount': round(total_amount, 2),
+        'billing_cycle': billing_cycle,
+        'available_cycles': available_cycles
+    })
+
+
+@app.route('/api/tencent/bills/all', methods=['GET'])
+def api_get_all_tencent_bills():
+    """获取所有月份的腾讯云账单"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT tmb.*, a.name as account_name
+        FROM tencent_monthly_bills tmb
+        JOIN accounts a ON tmb.account_id = a.id
+        WHERE a.provider = 'tencent'
+        ORDER BY tmb.billing_cycle DESC, a.name
+    ''')
+    bills = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+
+    # 解析 details_summary
+    for bill in bills:
+        if bill.get('details_summary'):
+            try:
+                bill['details_summary'] = json.loads(bill['details_summary'])
+            except (json.JSONDecodeError, TypeError):
+                bill['details_summary'] = {}
+        else:
+            bill['details_summary'] = {}
+
+    total_amount = sum(b['total_amount'] for b in bills)
+
+    return jsonify({
+        'bills': bills,
+        'total_amount': round(total_amount, 2)
+    })
+
+
+@app.route('/api/tencent/bills/sync', methods=['POST'])
+def api_sync_tencent_bill():
+    """同步腾讯云账单"""
+    data = request.json
+    account_id = data.get('account_id')
+    billing_month = data.get('billing_month')
+    if not account_id:
+        return jsonify({'error': '缺少 account_id'}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM accounts WHERE id = ?', (account_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return jsonify({'error': '账号不存在'}), 404
+    account = dict(row)
+    if account.get('provider') != 'tencent':
+        return jsonify({'error': '不是腾讯云账号'}), 400
+
+    result = sync_tencent_bill(account_id, account['access_key_id'], account['access_key_secret'], billing_month)
+    
+    # 同时同步余额
+    balance = sync_tencent_balance(account_id, account['access_key_id'], account['access_key_secret'])
+    
+    return jsonify({'success': True, 'synced_cycles': result, 'balance': balance})
+
+
+@app.route('/api/tencent/accounts', methods=['GET'])
+def api_get_tencent_accounts():
+    """获取腾讯云账号列表"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, remark, balance FROM accounts WHERE provider = 'tencent' ORDER BY name")
+    accounts = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return jsonify(accounts)
+
+
 # ---------- 账号余额 ----------
 
 @app.route('/api/balance', methods=['GET'])
@@ -4279,6 +4666,16 @@ def ram_sync_users(account_id):
         config.endpoint = 'ram.aliyuncs.com'
         client = RamClient(config)
         
+        # 获取账号别名（域名别名）
+        account_alias = None
+        try:
+            alias_resp = client.get_account_alias()
+            if alias_resp.body and alias_resp.body.account_alias:
+                account_alias = alias_resp.body.account_alias
+                app.logger.info(f'[RAM] 检测到账号别名: {account_alias}')
+        except Exception as e:
+            app.logger.warning(f'[RAM] 获取账号别名失败: {str(e)}')
+        
         req = ram_models.ListUsersRequest()
         resp = client.list_users(req)
         
@@ -4286,8 +4683,19 @@ def ram_sync_users(account_id):
         if resp.body and resp.body.users and resp.body.users.user:
             for u in resp.body.users.user:
                 upn = getattr(u, 'user_principal_name', '') or ''
-                if not upn and aliyun_account_id:
-                    upn = f"{u.user_name}@{aliyun_account_id}.onaliyun.com"
+                
+                # 如果UPN为空或有账号别名，构造完整的UPN
+                if not upn:
+                    # UPN为空，使用别名或数字ID构造
+                    domain = account_alias or aliyun_account_id
+                    if domain:
+                        upn = f"{u.user_name}@{domain}.onaliyun.com"
+                elif account_alias:
+                    # UPN不为空但有别名，替换数字ID为别名
+                    parts = upn.split('@')
+                    if len(parts) == 2:
+                        username = parts[0]
+                        upn = f"{username}@{account_alias}.onaliyun.com"
                 
                 access_keys = []
                 try:
@@ -4366,14 +4774,57 @@ def ram_create_user(account_id):
 
 @app.route('/api/accounts/<int:account_id>/ram/users/<user_name>', methods=['DELETE'])
 def ram_delete_user(account_id, user_name):
-    """删除 RAM 用户"""
+    """删除 RAM 用户（自动清理依赖关系）"""
     client, err = _get_ram_client(account_id)
     if err:
         return jsonify({'success': False, 'error': err}), 400
     try:
         from alibabacloud_ram20150501 import models as ram_models
+        
+        # 1. 解除所有权限策略
+        try:
+            list_req = ram_models.ListPoliciesForUserRequest(user_name=user_name)
+            list_resp = client.list_policies_for_user(list_req)
+            if list_resp.body and list_resp.body.policies and list_resp.body.policies.policy:
+                for policy in list_resp.body.policies.policy:
+                    detach_req = ram_models.DetachPolicyFromUserRequest(
+                        user_name=user_name,
+                        policy_type=policy.policy_type,
+                        policy_name=policy.policy_name
+                    )
+                    client.detach_policy_from_user(detach_req)
+                    app.logger.info(f'[RAM] 已解除用户 {user_name} 的策略: {policy.policy_name}')
+        except Exception as e:
+            app.logger.warning(f'[RAM] 解除策略失败: {str(e)}')
+        
+        # 2. 删除所有 AccessKey
+        try:
+            list_ak_req = ram_models.ListAccessKeysRequest(user_name=user_name)
+            list_ak_resp = client.list_access_keys(list_ak_req)
+            if list_ak_resp.body and list_ak_resp.body.access_keys and list_ak_resp.body.access_keys.access_key:
+                for ak in list_ak_resp.body.access_keys.access_key:
+                    delete_ak_req = ram_models.DeleteAccessKeyRequest(
+                        user_name=user_name,
+                        user_access_key_id=ak.access_key_id
+                    )
+                    client.delete_access_key(delete_ak_req)
+                    app.logger.info(f'[RAM] 已删除用户 {user_name} 的 AccessKey: {ak.access_key_id}')
+        except Exception as e:
+            app.logger.warning(f'[RAM] 删除 AccessKey 失败: {str(e)}')
+        
+        # 3. 删除登录配置（如果存在）
+        try:
+            delete_profile_req = ram_models.DeleteLoginProfileRequest(user_name=user_name)
+            client.delete_login_profile(delete_profile_req)
+            app.logger.info(f'[RAM] 已删除用户 {user_name} 的登录配置')
+        except Exception as e:
+            # 如果没有登录配置，可能会报错，忽略
+            app.logger.debug(f'[RAM] 删除登录配置（可能不存在）: {str(e)}')
+        
+        # 4. 删除用户
         req = ram_models.DeleteUserRequest(user_name=user_name)
         client.delete_user(req)
+        
         log_operation('RAM管理', '删除用户', f'删除 RAM 用户：{user_name}', account_id=account_id, account_name=get_account_name(account_id), ip_address=get_client_ip())
         return jsonify({'success': True, 'message': f'RAM 用户 {user_name} 已删除'})
     except Exception as e:
@@ -4793,7 +5244,7 @@ def _get_cas_client(account_id):
             access_key_id=row['access_key_id'],
             access_key_secret=row['access_key_secret']
         )
-        config.endpoint = 'cas.aliyuncs.com'
+        config.endpoint = get_api_endpoint('cas', account_id)
         return CasClient(config), None
     except ImportError:
         return None, 'SSL SDK 未安装，请运行 pip install alibabacloud_cas20200407'
@@ -4807,6 +5258,7 @@ def ssl_list_certificates(account_id):
         certs = []
         for row in rows:
             certs.append({
+                'account_id': account_id,
                 'id': row['cert_id'],
                 'name': row['name'] or '',
                 'domain': row['domain'] or '',
@@ -4815,11 +5267,40 @@ def ssl_list_certificates(account_id):
                 'end_date': row['end_date'] or '',
                 'cert_type': row['cert_type'] or '',
                 'issuer': row['issuer'] or '',
+                'renewal_status': row['renewal_status'] or '',
             })
         return jsonify({'success': True, 'certificates': certs})
     except Exception as e:
         tb = traceback.format_exc()
         app.logger.error(f'[SSL] 查询证书列表失败: {e}\n{tb}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/accounts/<int:account_id>/ssl/certificates/renewal', methods=['PUT'])
+def ssl_update_renewal_status(account_id):
+    """更新 SSL 证书的续费状态"""
+    try:
+        data = request.get_json()
+        cert_id = data.get('cert_id', '')
+        renewal_status = data.get('renewal_status', '')
+        
+        if not cert_id:
+            return jsonify({'success': False, 'error': '证书ID不能为空'}), 400
+        
+        # 验证续费状态值
+        valid_statuses = ['', '已续费', '未续费', '不续费']
+        if renewal_status not in valid_statuses:
+            return jsonify({'success': False, 'error': f'无效的续费状态，可选值: {", ".join(valid_statuses)}'}), 400
+        
+        execute_db(
+            'UPDATE ssl_certificates SET renewal_status = ? WHERE account_id = ? AND cert_id = ?',
+            (renewal_status, account_id, cert_id)
+        )
+        
+        return jsonify({'success': True, 'message': '续费状态已更新'})
+    except Exception as e:
+        tb = traceback.format_exc()
+        app.logger.error(f'[SSL] 更新续费状态失败: {e}\n{tb}')
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -4841,7 +5322,9 @@ def _get_cms_client(account_id):
             access_key_id=row['access_key_id'],
             access_key_secret=row['access_key_secret']
         )
-        config.endpoint = get_api_endpoint('cms', account_id)
+        endpoint = get_api_endpoint('cms', account_id)
+        config.endpoint = endpoint
+        print(f"[INFO] 云监控客户端 - 账号ID: {account_id}, 端点: {endpoint}")
         return CmsClient(config), None
     except ImportError:
         return None, 'CloudMonitor SDK 未安装，请运行 pip install alibabacloud_cms20190101'

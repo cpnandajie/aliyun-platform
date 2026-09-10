@@ -19,11 +19,11 @@ function MonthPickerModal({ open, onClose, title, year, onYearChange, value, onC
         </div>
         <div className="modal-body" style={{ padding: '20px 24px' }}>
           <div style={{ marginBottom: 16 }}>
-            <label style={{ display: 'block', marginBottom: 8, fontSize: 14, color: '#334155' }}>选择月份</label>
+            <label style={{ display: 'block', marginBottom: 8, fontSize: 14, color: '#000' }}>选择月份</label>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, marginBottom: 12 }}>
-              <button type="button" style={{ padding: '4px 12px', fontSize: 18, background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 6, cursor: 'pointer', color: '#334155', lineHeight: 1 }} onClick={() => onYearChange(year - 1)}>‹</button>
+              <button type="button" style={{ padding: '4px 12px', fontSize: 18, background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 6, cursor: 'pointer', color: '#000', lineHeight: 1 }} onClick={() => onYearChange(year - 1)}>‹</button>
               <span style={{ fontSize: 16, fontWeight: 600, color: '#0f172a', minWidth: 60, textAlign: 'center' }}>{year}年</span>
-              <button type="button" style={{ padding: '4px 12px', fontSize: 18, background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 6, cursor: 'pointer', color: '#334155', lineHeight: 1 }} onClick={() => onYearChange(year + 1)}>›</button>
+              <button type="button" style={{ padding: '4px 12px', fontSize: 18, background: '#f1f5f9', border: '1px solid #e2e8f0', borderRadius: 6, cursor: 'pointer', color: '#000', lineHeight: 1 }} onClick={() => onYearChange(year + 1)}>›</button>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
               {[1,2,3,4,5,6,7,8,9,10,11,12].map(m => {
@@ -46,7 +46,7 @@ function MonthPickerModal({ open, onClose, title, year, onYearChange, value, onC
               })}
             </div>
           </div>
-          <div style={{ fontSize: 13, color: '#64748b', marginBottom: 20, textAlign: 'center' }}>
+          <div style={{ fontSize: 13, color: '#000', marginBottom: 20, textAlign: 'center' }}>
             {statusText}
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
@@ -76,7 +76,7 @@ class ErrorBoundary extends Component {
       return (
         <div style={{ padding: 40, textAlign: 'center' }}>
           <h2 style={{ color: '#ef4444' }}>页面出错了</h2>
-          <p style={{ color: '#64748b', marginTop: 12 }}>{this.state.error?.message || '未知错误'}</p>
+          <p style={{ color: '#000', marginTop: 12 }}>{this.state.error?.message || '未知错误'}</p>
           <button
             className="btn-primary"
             style={{ marginTop: 16 }}
@@ -208,12 +208,13 @@ const fmtDate = (d) => {
 // ==================== 侧边栏组件====================
 function Sidebar({ activeMenu, onMenuChange }) {
   const defaultMenus = [
-    { key: 'overview', label: '资源概览', icon: '' },
+    { key: 'overview', label: '账号总览', icon: '' },
     { key: 'resources', label: '资源管理', icon: '' },
     { key: 'network', label: '网络管理', icon: '' },
     { key: 'publicip', label: '公网大全', icon: '' },
     { key: 'weblinks', label: '网址大全', icon: '' },
     { key: 'bills', label: '账单管理', icon: '' },
+    { key: 'tencent-bills', label: '腾讯云账单', icon: '' },
     { key: 'ram', label: 'RAM 管理', icon: '' },
     { key: 'dns', label: '域名管理', icon: '' },
     { key: 'ssl', label: 'SSL 证书', icon: '' },
@@ -306,7 +307,7 @@ function SkeletonOverview() {
   return (
     <div className="page-content">
       <div className="page-header">
-        <h2>资源概览</h2>
+        <h2>账号总览</h2>
       </div>
       <div className="skeleton-cards">
         {[...Array(7)].map((_, i) => (
@@ -505,7 +506,7 @@ const formatRegion = (text) => {
   )
 }
 
-// ==================== 资源概览页面 ====================
+// ==================== 账号总览页面 ====================
 function ResourceOverview() {
   const { onMenuChange } = useContext(MenuContext)
   const searchFilterCtx = useContext(SearchFilterContext)
@@ -536,10 +537,15 @@ function ResourceOverview() {
     }
   }, [searchFilterCtx?.searchFilter])
 
+  const [creditGroups, setCreditGroups] = useState([])
+
   const loadData = useCallback(() => {
     setLoading(true)
     axios.get('/api/overview')
-      .then(res => setOverview(res.data))
+      .then(res => {
+        setOverview(res.data.overview || [])
+        setCreditGroups(res.data.credit_groups || [])
+      })
       .catch(err => console.error('加载概览失败:', err))
       .finally(() => setLoading(false))
   }, [])
@@ -645,7 +651,7 @@ function ResourceOverview() {
   return (
     <div className="page-content">
       <div className="page-header">
-        <h2>资源概览</h2>
+        <h2>账号总览</h2>
         <button className="btn-refresh" onClick={loadData} disabled={loading}>
           {loading ? '刷新中..' : '刷新'}
         </button>
@@ -679,16 +685,16 @@ function ResourceOverview() {
               <div style={{ textAlign: 'center', color: '#94a3b8', padding: 24 }}>搜索中...</div>
             ) : searchResults.length === 0 ? (
               <div style={{ textAlign: 'center', color: '#94a3b8', padding: 24 }}>
-                未找到与 "<span style={{ color: '#334155', fontWeight: 500 }}>{searchKeyword}</span>" 相关的结果
+                未找到与 "<span style={{ color: '#000', fontWeight: 500 }}>{searchKeyword}</span>" 相关的结果
               </div>
             ) : (
               <>
-                <div style={{ fontSize: 13, color: '#64748b', marginBottom: 12 }}>
+                <div style={{ fontSize: 13, color: '#000', marginBottom: 12 }}>
                   共找到 <span style={{ color: '#6366f1', fontWeight: 600 }}>{searchResults.length}</span> 条结果
                 </div>
                 {Object.entries(groupedResults).map(([type, items]) => (
                   <div key={type} style={{ marginBottom: 16 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: '#475569', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#000', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
                       <span>{type}</span>
                       <span style={{ fontSize: 12, color: '#94a3b8', fontWeight: 400 }}>({items.length})</span>
                     </div>
@@ -701,7 +707,7 @@ function ResourceOverview() {
                         >
                           <span style={{ fontWeight: 500, color: '#0f172a' }}>{highlightKeyword(item.name, searchKeyword)}</span>
                           {item.detail && (
-                            <span style={{ fontSize: 12, color: '#64748b', marginLeft: 12 }}>{highlightKeyword(formatRegion(item.detail), searchKeyword)}</span>
+                            <span style={{ fontSize: 12, color: '#000', marginLeft: 12 }}>{highlightKeyword(formatRegion(item.detail), searchKeyword)}</span>
                           )}
                         </div>
                       ))}
@@ -714,41 +720,57 @@ function ResourceOverview() {
         )}
       </div>
 
-      {/* 汇总卡片*/}
-      <div className="summary-cards">
-        <div className="summary-card">
-          <div className="card-value">{totalEcs}</div>
-          <div className="card-label">ECS实例</div>
+      {/* 财务概览 */}
+      {creditGroups.length > 0 && (
+        <div className="section-block">
+          <h3 style={{ marginBottom: 16 }}>财务概览</h3>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: '16px' }}>
+            {/* 本月消费总计卡片 */}
+            <div className="summary-card highlight" style={{ padding: '20px', borderLeft: 'none', background: 'linear-gradient(135deg, rgba(255,255,255,0.9), rgba(99,102,241,0.04))', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+              <div className="card-label">本月消费总计</div>
+              <div className="card-value">¥{fmtMoney(totalMonthAmount)}</div>
+            </div>
+            
+            {/* 可用额度总计卡片 */}
+            <div className="summary-card highlight success" style={{ padding: '20px', borderLeft: 'none', background: 'linear-gradient(135deg, rgba(255,255,255,0.9), rgba(16,185,129,0.04))', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+              <div className="card-label">可用额度总计</div>
+              <div className="card-value">¥{fmtMoney(totalBalance)}</div>
+            </div>
+            
+            {creditGroups.map((group, idx) => {
+              const sym = group.currency === 'SGD' ? 'SGD ' : '¥'
+              return (
+                <div key={idx} className="summary-card" style={{ padding: '20px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, borderBottom: '2px solid #e2e8f0', paddingBottom: 12 }}>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: '#1e293b' }}>{group.group_name}</div>
+                    <span style={{ fontSize: 11, padding: '4px 10px', background: group.currency === 'SGD' ? '#fef3c7' : '#dbeafe', color: group.currency === 'SGD' ? '#92400e' : '#1e40af', borderRadius: 4, fontWeight: 500 }}>
+                      {group.currency === 'SGD' ? '新加坡元' : '人民币'}
+                    </span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+                    <div>
+                      <div style={{ fontSize: 12, color: '#000', marginBottom: 4 }}>可用额度</div>
+                      <div style={{ fontSize: 18, fontWeight: 600, color: '#10b981' }}>{sym}{fmtMoney(group.total_available)}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 12, color: '#000', marginBottom: 4 }}>信用额度</div>
+                      <div style={{ fontSize: 18, fontWeight: 600, color: '#3b82f6' }}>{sym}{fmtMoney(group.total_credit)}</div>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#000', borderTop: '1px solid #e2e8f0', paddingTop: 12 }}>
+                    <div style={{ marginBottom: 4 }}>共享账号 ({group.accounts.length}个)</div>
+                    <div style={{ fontSize: 13, color: '#000', lineHeight: 1.5 }}>{group.accounts.join('、')}</div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
         </div>
-        <div className="summary-card">
-          <div className="card-value">{totalRds}</div>
-          <div className="card-label">RDS实例</div>
-        </div>
-        <div className="summary-card">
-          <div className="card-value">{totalSlb}</div>
-          <div className="card-label">SLB实例</div>
-        </div>
-        <div className="summary-card">
-          <div className="card-value">{totalOss}</div>
-          <div className="card-label">OSS Bucket</div>
-        </div>
-        <div className="summary-card">
-          <div className="card-value">{totalRedis}</div>
-          <div className="card-label">Redis实例</div>
-        </div>
-        <div className="summary-card highlight">
-          <div className="card-value">¥{fmtMoney(totalMonthAmount)}</div>
-          <div className="card-label">本月消费</div>
-        </div>
-        <div className="summary-card highlight">
-          <div className="card-value">¥{fmtMoney(totalBalance)}</div>
-          <div className="card-label">可用额度</div>
-        </div>
-      </div>
+      )}
 
       {/* 详情 */}
       <div className="section-block">
-        <h3>各账号资源</h3>
+        <h3>资源概览</h3>
         {overview.length === 0 ? (
           <div className="empty-state">暂无数据，请先在账号管理中添加阿里云账号并同步数据</div>
         ) : (
@@ -759,6 +781,7 @@ function ResourceOverview() {
                   {[
                     { key: 'account_name', label: '账号名称' },
                     { key: 'remark', label: '备注' },
+                    { key: 'credit_group', label: '信用分组' },
                     { key: 'ecs_count', label: 'ECS' },
                     { key: 'rds_count', label: 'RDS' },
                     { key: 'slb_count', label: 'SLB' },
@@ -786,29 +809,58 @@ function ResourceOverview() {
                   }
                   const sa = String(va), sb = String(vb)
                   return ovSortDir === 'asc' ? sa.localeCompare(sb) : sb.localeCompare(sa)
-                }).map(item => {
+                }).map((item, idx) => {
                   const sym = item.currency === 'SGD' ? 'SGD ' : '¥'
                   return (
                   <tr key={item.account_id}>
                     <td>{item.account_name}</td>
                     <td>{item.remark || '-'}</td>
+                    <td>
+                      {item.credit_group ? (
+                        <span style={{ 
+                          display: 'inline-block',
+                          padding: '2px 8px',
+                          background: '#f1f5f9',
+                          borderRadius: 4,
+                          fontSize: 12,
+                          fontWeight: 500,
+                          color: '#000'
+                        }}>
+                          {item.credit_group}
+                        </span>
+                      ) : <span style={{ color: '#999' }}>-</span>}
+                    </td>
                     <td>{item.ecs_count}</td>
                     <td>{item.rds_count}</td>
                     <td>{item.slb_count}</td>
                     <td>{item.oss_count}</td>
                     <td>{item.redis_count}</td>
                     <td className="td-amount">{sym}{fmtMoney(item.month_amount)}</td>
-                    <td className={(item.available_amount < (item.balance_threshold || 20000)) ? 'td-amount-danger' : 'td-amount'}>{sym}{fmtMoney(item.available_amount)}</td>
+                    <td className={(item.available_amount < (item.balance_threshold ?? 20000)) ? 'td-amount-danger' : 'td-amount'}>{sym}{fmtMoney(item.available_amount)}</td>
                   </tr>
                   )
                 })}
               </tbody>
+              <tfoot>
+                <tr style={{ fontWeight: 600, backgroundColor: '#f8fafc' }}>
+                  <td>汇总</td>
+                  <td>-</td>
+                  <td>-</td>
+                  <td>{totalEcs}</td>
+                  <td>{totalRds}</td>
+                  <td>{totalSlb}</td>
+                  <td>{totalOss}</td>
+                  <td>{totalRedis}</td>
+                  <td className="td-amount">¥{fmtMoney(totalMonthAmount)}</td>
+                  <td className="td-amount">¥{fmtMoney(totalBalance)}</td>
+                </tr>
+              </tfoot>
             </table>
           </div>
         )}
       </div>
+
       <div className="page-note">* 当账号的可用额度低于其设定的预警阈值时，将以<span style={{ color: '#ef4444', fontWeight: 600 }}>红色</span>显示，可在账号设置中自定义每个账号的阈值。</div>
-      <div className="page-note">* 右上角的「本月消费」和「可用额度」汇总仅统计人民币账户，新加坡元账户不参与汇总。</div>
     </div>
   )
 }
@@ -1536,7 +1588,7 @@ function PublicIPManagement() {
             </thead>
             <tbody>
               {sorted.map(ip => {
-                const sc = SOURCE_COLORS[ip.source] || { bg: '#f8fafc', color: '#64748b', border: '#e2e8f0' }
+                const sc = SOURCE_COLORS[ip.source] || { bg: '#f8fafc', color: '#000', border: '#e2e8f0' }
                 const isManual = ['huawei', 'idc', 'office'].includes(ip.source)
                 return (
                   <tr key={ip.id ? `m-${ip.id}` : `${ip.source}-${ip.ip_address}-${ip.instance_id}`}>
@@ -1573,10 +1625,10 @@ function PublicIPManagement() {
         <div className="modal-overlay">
           <div className="modal-box" style={{ width: 460, textAlign: 'left' }}>
             <h3 style={{ margin: '0 0 8px' }}>来源名称设置</h3>
-            <p style={{ color: '#64748b', fontSize: 13, margin: '0 0 16px' }}>自定义来源显示名称，删除来源将同时删除关联的公网IP</p>
+            <p style={{ color: '#000', fontSize: 13, margin: '0 0 16px' }}>自定义来源显示名称，删除来源将同时删除关联的公网IP</p>
             {editLabels.map((item, idx) => (
               <div key={item.source} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-                <span style={{ width: 80, fontSize: 13, color: '#64748b', flexShrink: 0 }}>{item.source}</span>
+                <span style={{ width: 80, fontSize: 13, color: '#000', flexShrink: 0 }}>{item.source}</span>
                 <input
                   type="text"
                   value={item.label}
@@ -1614,7 +1666,7 @@ function PublicIPManagement() {
         <div className="modal-overlay">
           <div className="modal-box" style={{ width: 680, maxHeight: '80vh', display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
             <h3 style={{ margin: '0 0 8px' }}>导入预览 — {importData.fileName}</h3>
-            <p style={{ color: '#64748b', fontSize: 13, margin: '0 0 12px' }}>共解析 {importData.items.length} 条数据，请确认后导入</p>
+            <p style={{ color: '#000', fontSize: 13, margin: '0 0 12px' }}>共解析 {importData.items.length} 条数据，请确认后导入</p>
             <div style={{ flex: 1, overflow: 'auto', border: '1px solid #e2e8f0', borderRadius: 8, marginBottom: 16 }}>
               <table className="data-table" style={{ margin: 0 }}>
                 <thead>
@@ -2044,7 +2096,7 @@ function BillManagement() {
               setHistoryMonthPickerOpen(true)
             }}
           >{historyStartMonth || '选择月份'}</button>
-          <span style={{ color: '#64748b', fontSize: 13 }}>开始同步</span>
+          <span style={{ color: '#000', fontSize: 13 }}>开始同步</span>
         </div>
         {availableCycles.length > 0 && (
           <div className="cycle-chips">
@@ -2185,7 +2237,7 @@ function BillManagement() {
                               {detailSearch && (
                                 <button className="btn-default" style={{ padding: '3px 8px', fontSize: 12 }} onClick={() => setDetailSearch('')}>重置</button>
                               )}
-                              <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', color: '#64748b' }}>
+                              <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', color: '#000' }}>
                                 <input type="checkbox" checked={hideZeroBills} onChange={e => setHideZeroBills(e.target.checked)} style={{ cursor: 'pointer' }} />
                                 隐藏0金额项
                               </label>
@@ -2512,7 +2564,7 @@ function BillManagement() {
                         <td style={{ fontSize: 14, textAlign: 'right' }}>{pct}%</td>
                         <td style={{ fontSize: 14, textAlign: 'right', color: discount ? '#f59e0b' : '#94a3b8' }}>{discount ? `${discount}折` : '-'}</td>
                         <td style={{ textAlign: 'right', fontSize: 13 }}>
-                          <span style={{ color: '#64748b' }}>
+                          <span style={{ color: '#000' }}>
                             {acctEntries.map(([name, amount], j) => (
                               <span key={j}>
                                 {j > 0 && <span style={{ margin: '0 6px', color: '#e2e8f0' }}>|</span>}
@@ -2534,7 +2586,7 @@ function BillManagement() {
                             <div style={{ padding: '8px 16px 12px', borderBottom: '1px solid #e2e8f0' }}>
                               <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
                                 <thead>
-                                  <tr style={{ color: '#64748b' }}>
+                                  <tr style={{ color: '#000' }}>
                                     <th style={{ textAlign: 'left', padding: '4px 8px', fontWeight: 500 }}>账号</th>
                                     <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 500 }}>目录总价</th>
                                     <th style={{ textAlign: 'right', padding: '4px 8px', fontWeight: 500 }}>应付金额</th>
@@ -2577,7 +2629,7 @@ function BillManagement() {
       </>
       )}
       {/* 颜色说明 */}
-      <div style={{ marginTop: 16, padding: '10px 16px', background: '#f8fafc', borderRadius: 8, fontSize: 13, color: '#64748b', lineHeight: 2 }}>
+      <div style={{ marginTop: 16, padding: '10px 16px', background: '#f8fafc', borderRadius: 8, fontSize: 13, color: '#000', lineHeight: 2 }}>
         <span>金额颜色：</span>
         <span style={{ marginRight: 12 }}><span style={{ color: '#10b981', fontWeight: 500 }}>绿色</span> = 已全部还清</span>
         <span style={{ marginRight: 24 }}><span style={{ color: '#0f172a', fontWeight: 500 }}>黑色</span> = 仍有待还款</span>
@@ -2963,7 +3015,7 @@ function AccountManagement() {
   })
   const [showForm, setShowForm] = useState(false)
   const [editingAccount, setEditingAccount] = useState(null)
-  const [formData, setFormData] = useState({ name: '', access_key_id: '', access_key_secret: '', remark: '', balance_threshold: 20000, currency: 'CNY' })
+  const [formData, setFormData] = useState({ name: '', access_key_id: '', access_key_secret: '', remark: '', balance_threshold: 20000, currency: 'CNY', provider: 'aliyun', credit_group: '' })
   // 账单同步月份选择
   const [billSyncDialog, setBillSyncDialog] = useState(null) // { accountId, accountName }
   const [billSyncMonth, setBillSyncMonth] = useState('')
@@ -3123,13 +3175,13 @@ function AccountManagement() {
   }
 
   const handleAddAccount = () => {
-    setFormData({ name: '', access_key_id: '', access_key_secret: '', remark: '', balance_threshold: 20000, currency: 'CNY' })
+    setFormData({ name: '', access_key_id: '', access_key_secret: '', remark: '', balance_threshold: 20000, currency: 'CNY', provider: 'aliyun' })
     setEditingAccount(null)
     setShowForm(true)
   }
 
   const handleEditAccount = (account) => {
-    setFormData({ name: account.name, access_key_id: account.access_key_id, access_key_secret: '', remark: account.remark || '', balance_threshold: account.balance_threshold ?? 20000, currency: account.currency || 'CNY' })
+    setFormData({ name: account.name, access_key_id: account.access_key_id, access_key_secret: '', remark: account.remark || '', balance_threshold: account.balance_threshold ?? 20000, currency: account.currency || 'CNY', provider: account.provider || 'aliyun', credit_group: account.credit_group || '' })
     setEditingAccount(account)
     setShowForm(true)
   }
@@ -3349,7 +3401,7 @@ function AccountManagement() {
             </button>
           </div>
           <div className="auto-sync-interval">
-            <span style={{ color: '#64748b', fontSize: 14 }}>每个整点自动同步</span>
+            <span style={{ color: '#000', fontSize: 14 }}>每个整点自动同步</span>
           </div>
           {autoSync.last_sync_at && (
             <div className="auto-sync-last">
@@ -3373,7 +3425,7 @@ function AccountManagement() {
       {/* 默认区域配置 */}
       <div className="section-block">
         <h3>同步区域</h3>
-        <p style={{ color: '#64748b', fontSize: 14, marginBottom: 12 }}>勾选需要同步的区域，至少选择一个</p>
+        <p style={{ color: '#000', fontSize: 14, marginBottom: 12 }}>勾选需要同步的区域，至少选择一个</p>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '8px 16px' }}>
           {ALL_REGIONS.map(region => (
             <label key={region.id} style={{
@@ -3389,7 +3441,7 @@ function AccountManagement() {
                 onChange={() => handleToggleRegion(region.id)}
                 style={{ margin: 0, accentColor: '#6366f1', flexShrink: 0 }}
               />
-              <span style={{ fontSize: 13, color: '#334155', whiteSpace: 'nowrap' }}>
+              <span style={{ fontSize: 13, color: '#000', whiteSpace: 'nowrap' }}>
                 {region.name}
               </span>
             </label>
@@ -3430,11 +3482,22 @@ function AccountManagement() {
                 <input type="number" value={formData.balance_threshold} onChange={e => setFormData(prev => ({ ...prev, balance_threshold: e.target.value === '' ? '' : Number(e.target.value) }))} placeholder="默认 20000" min="0" />
               </div>
               <div className="form-item">
+                <label>云平台</label>
+                <select value={formData.provider} onChange={e => setFormData(prev => ({ ...prev, provider: e.target.value }))}>
+                  <option value="aliyun">阿里云</option>
+                  <option value="tencent">腾讯云</option>
+                </select>
+              </div>
+              <div className="form-item">
                 <label>币种</label>
                 <select value={formData.currency} onChange={e => setFormData(prev => ({ ...prev, currency: e.target.value }))}>
                   <option value="CNY">人民币（¥）</option>
                   <option value="SGD">新加坡元（SGD）</option>
                 </select>
+              </div>
+              <div className="form-item">
+                <label>信用分组</label>
+                <input type="text" value={formData.credit_group} onChange={e => setFormData(prev => ({ ...prev, credit_group: e.target.value }))} placeholder="共享信用额度的分组名称" />
               </div>
             </div>
             <div className="form-actions">
@@ -3453,8 +3516,10 @@ function AccountManagement() {
                 <tr>
                   {[
                     { key: 'name', label: '账号名称' },
-                    { key: 'aliyun_account_id', label: '阿里云账号ID' },
+                    { key: 'provider', label: '云平台' },
+                    { key: 'aliyun_account_id', label: '云账号ID' },
                     { key: 'access_key_id', label: 'AccessKey ID' },
+                    { key: 'credit_group', label: '信用分组' },
                     { key: 'remark', label: '备注' },
                     { key: 'balance_threshold', label: '预警阈值' },
                     { key: 'currency', label: '币种' },
@@ -3488,8 +3553,10 @@ function AccountManagement() {
                 }).map(acct => (
                   <tr key={acct.id}>
                     <td>{acct.name}</td>
+                    <td>{acct.provider === 'tencent' ? '腾讯云' : '阿里云'}</td>
                     <td className="td-mono">{acct.aliyun_account_id || '-'}</td>
                     <td className="td-mono">{acct.access_key_id}</td>
+                    <td>{acct.credit_group || <span style={{ color: '#999' }}>-</span>}</td>
                     <td>{acct.remark || '-'}</td>
                     <td>{(acct.currency || 'CNY') === 'SGD' ? 'SGD ' : '¥'}{fmtMoney(acct.balance_threshold ?? 20000)}</td>
                     <td>{(acct.currency || 'CNY') === 'SGD' ? '新加坡元' : '人民币'}</td>
@@ -4482,11 +4549,11 @@ function DnsManagement() {
                   <tr key={`${d.account_id || ''}-${d.domain_name}`}
                     style={{ cursor: 'pointer', background: selectedDomain === d.domain_name ? '#eef2ff' : 'transparent' }}
                     onClick={() => setSelectedDomain(d.domain_name)}>
-                    {selectedAccount === 'all' && <td style={{ color: '#64748b' }}>{domainKeyword ? highlightKeyword(d.account_name, domainKeyword) : d.account_name}</td>}
-                    <td>{domainKeyword ? highlightKeyword(d.domain_name, domainKeyword) : d.domain_name}</td>
-                    <td style={{ color: '#64748b' }}>{domainKeyword ? highlightKeyword(d.holder || '-', domainKeyword) : (d.holder || '-')}</td>
+                    {selectedAccount === 'all' && <td style={{ color: '#000' }}>{domainKeyword ? highlightKeyword(d.account_name, domainKeyword) : d.account_name}</td>}
+                    <td style={{ color: '#000' }}>{domainKeyword ? highlightKeyword(d.domain_name, domainKeyword) : d.domain_name}</td>
+                    <td style={{ color: '#000' }}>{domainKeyword ? highlightKeyword(d.holder || '-', domainKeyword) : (d.holder || '-')}</td>
                     <td>{d.record_count}</td>
-                    <td className="td-mono" style={{ color: d.end_time && (() => { const s=String(d.end_time).trim(); const ts=/^\d{10,13}$/.test(s)?(s.length===10?Number(s)*1000:Number(s)):new Date(s).getTime(); return !isNaN(ts)&&ts<Date.now() })() ? '#ef4444' : '#334155' }}>
+                    <td className="td-mono" style={{ color: d.end_time && (() => { const s=String(d.end_time).trim(); const ts=/^\d{10,13}$/.test(s)?(s.length===10?Number(s)*1000:Number(s)):new Date(s).getTime(); return !isNaN(ts)&&ts<Date.now() })() ? '#ef4444' : '#000' }}>
                       {fmtDate(d.end_time)}
                     </td>
                     <td>{getDomainStatusTag(d)}</td>
@@ -4621,7 +4688,7 @@ function DnsManagement() {
               >
                 上一页
               </button>
-              <span style={{ fontSize: 14, color: '#64748b' }}>
+              <span style={{ fontSize: 14, color: '#000' }}>
                 第 {recordPage} / {recordTotalPages} 页，共 {recordTotal} 条
               </span>
               <button
@@ -4770,6 +4837,34 @@ function SslManagement() {
     return <span className="ssl-status ok">剩余 {days} 天</span>
   }
 
+  const updateRenewalStatus = async (accountId, certId, renewalStatus) => {
+    console.log('更新续费状态:', { accountId, certId, renewalStatus })
+    if (!accountId) {
+      toast.error('账号ID不存在，请刷新页面重试')
+      return
+    }
+    try {
+      const res = await axios.put(`/api/accounts/${accountId}/ssl/certificates/renewal`, {
+        cert_id: certId,
+        renewal_status: renewalStatus
+      })
+      if (res.data.success) {
+        toast.success('续费状态已更新')
+        // 更新本地状态
+        setCerts(prev => prev.map(c => 
+          c.account_id === accountId && c.id === certId 
+            ? { ...c, renewal_status: renewalStatus }
+            : c
+        ))
+      } else {
+        toast.error(res.data.error || '更新失败')
+      }
+    } catch (err) {
+      console.error('更新续费状态失败:', err)
+      toast.error('更新失败: ' + (err.response?.data?.error || err.message))
+    }
+  }
+
   const parseDate = (d) => {
     if (!d) return 0
     const s = String(d).trim()
@@ -4791,6 +4886,32 @@ function SslManagement() {
     { key: 'start_date', label: '生效时间', sortable: true, dateKey: true, render: v => v ? fmtDate(v) : '-' },
     { key: 'end_date', label: '到期时间', sortable: true, dateKey: true, render: v => v ? fmtDate(v) : '-' },
     { key: 'status', label: '状态', sortable: true, render: (_, c) => getStatusTag(c) },
+    { 
+      key: 'renewal_status', 
+      label: '续费标签', 
+      sortable: true, 
+      render: (v, c) => (
+        <select
+          value={v || ''}
+          onChange={(e) => updateRenewalStatus(c.account_id, c.id, e.target.value)}
+          style={{
+            padding: '4px 8px',
+            borderRadius: 4,
+            border: '1px solid #e2e8f0',
+            fontSize: 12,
+            fontWeight: 500,
+            cursor: 'pointer',
+            backgroundColor: v === '已续费' ? '#d1fae5' : v === '未续费' ? '#fef3c7' : v === '不续费' ? '#fee2e2' : '#f8fafc',
+            color: v === '已续费' ? '#059669' : v === '未续费' ? '#d97706' : v === '不续费' ? '#dc2626' : '#64748b'
+          }}
+        >
+          <option value="">未设置</option>
+          <option value="已续费">已续费</option>
+          <option value="未续费">未续费</option>
+          <option value="不续费">不续费</option>
+        </select>
+      )
+    },
   ]
 
   const visibleColumns = sslColumns.filter(c => c.showOnly !== 'all' || selectedAccount === 'all')
@@ -4927,7 +5048,12 @@ function CloudMonitor() {
 
   useEffect(() => {
     axios.get('/api/accounts').then(res => {
-      setAccounts(res.data)
+      // 过滤掉外币账号和腾讯云账号，只保留阿里云人民币账号
+      const cnyAliyunAccounts = (res.data || []).filter(a => 
+        (!a.currency || a.currency === 'CNY') && 
+        (!a.provider || a.provider !== 'tencent')
+      )
+      setAccounts(cnyAliyunAccounts)
       if (!selectedAccount) setSelectedAccount('all')
     })
   }, [])
@@ -5901,7 +6027,7 @@ function LogManagement() {
                     {log.success === 1 ? '成功' : '失败'}
                   </span>
                 </td>
-                <td style={{ whiteSpace: 'nowrap', fontFamily: 'monospace', fontSize: 13, color: '#64748b' }}>{log.ip_address || '-'}</td>
+                <td style={{ whiteSpace: 'nowrap', fontFamily: 'monospace', fontSize: 13, color: '#000' }}>{log.ip_address || '-'}</td>
                 <td>
                   {log.detail || '-'}
                   {log.success === 0 && log.error_msg && (
@@ -5919,7 +6045,7 @@ function LogManagement() {
 
       {/* 分页 */}
       {total > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, marginTop: 14, fontSize: 14, color: '#64748b' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10, marginTop: 14, fontSize: 14, color: '#000' }}>
           <span>共 {total} 条</span>
           <button className="btn-default" disabled={page <= 1 || loading} onClick={() => loadLogs(page - 1)}>上一页</button>
           <span>{page} / {totalPages}</span>
@@ -5931,14 +6057,368 @@ function LogManagement() {
   )
 }
 
+// ==================== 腾讯云账单管理 ====================
+function TencentBillManagement() {
+  const toast = useToast()
+  const [allBills, setAllBills] = useState([])
+  const [totalAmount, setTotalAmount] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [selectedBill, setSelectedBill] = useState(null)
+  const [tencentAccounts, setTencentAccounts] = useState([])
+  const [syncing, setSyncing] = useState(false)
+  const [viewMode, setViewMode] = useState('table') // 'table' or 'chart'
+
+  const loadData = useCallback(() => {
+    setLoading(true)
+    // 获取所有月份的账单
+    axios.get('/api/tencent/bills/all')
+      .then(res => {
+        setAllBills(res.data.bills || [])
+        setTotalAmount(res.data.total_amount || 0)
+      })
+      .catch(err => toast.error('加载腾讯云账单失败: ' + (err.response?.data?.error || err.message)))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const loadAccounts = useCallback(() => {
+    axios.get('/api/tencent/accounts')
+      .then(res => setTencentAccounts(res.data || []))
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => { loadData() }, [loadData])
+  useEffect(() => { loadAccounts() }, [loadAccounts])
+
+  const handleSync = async () => {
+    if (syncing || tencentAccounts.length === 0) return
+    setSyncing(true)
+    try {
+      // 动态生成月份列表：从2026年1月到当前月份
+      const now = new Date()
+      const currentYear = now.getFullYear()
+      const currentMonth = now.getMonth() + 1 // getMonth() 返回 0-11
+      
+      const months = []
+      // 从2026年1月开始到当前月份
+      for (let year = 2026; year <= currentYear; year++) {
+        const startMonth = year === 2026 ? 1 : 1
+        const endMonth = year === currentYear ? currentMonth : 12
+        
+        for (let month = startMonth; month <= endMonth; month++) {
+          const monthStr = `${year}-${String(month).padStart(2, '0')}`
+          months.push(monthStr)
+        }
+      }
+      
+      for (const acct of tencentAccounts) {
+        for (const month of months) {
+          await axios.post('/api/tencent/bills/sync', { account_id: acct.id, billing_month: month })
+        }
+      }
+      toast.success(`腾讯云账单同步完成（共同步 ${months.length} 个月）`)
+      loadData()
+    } catch (err) {
+      toast.error('同步失败: ' + (err.response?.data?.error || err.message))
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  // 按月份分组账单
+  const billsByMonth = {}
+  allBills.forEach(bill => {
+    if (!billsByMonth[bill.billing_cycle]) {
+      billsByMonth[bill.billing_cycle] = []
+    }
+    billsByMonth[bill.billing_cycle].push(bill)
+  })
+
+  // 按月份排序（降序，最新的在前）
+  const sortedMonths = Object.keys(billsByMonth).sort((a, b) => b.localeCompare(a))
+
+  // 按账号分组计算消费
+  const billsByAccount = {}
+  allBills.forEach(bill => {
+    if (!billsByAccount[bill.account_name]) {
+      billsByAccount[bill.account_name] = 0
+    }
+    billsByAccount[bill.account_name] += bill.total_amount
+  })
+
+  return (
+    <div className="page-content">
+      <div className="page-header">
+        <h2>腾讯云账单</h2>
+        <div className="header-actions">
+          <div style={{ display: 'flex', gap: 8, marginRight: 12 }}>
+            <button 
+              className={viewMode === 'table' ? 'btn-primary' : 'btn-secondary'}
+              onClick={() => setViewMode('table')}
+              style={{ padding: '6px 12px', fontSize: 13 }}
+            >
+              表格
+            </button>
+            <button 
+              className={viewMode === 'chart' ? 'btn-primary' : 'btn-secondary'}
+              onClick={() => setViewMode('chart')}
+              style={{ padding: '6px 12px', fontSize: 13 }}
+            >
+              图表
+            </button>
+          </div>
+          <button className="btn-primary" onClick={handleSync} disabled={syncing || tencentAccounts.length === 0}>
+            {syncing ? '同步中...' : '同步账单'}
+          </button>
+        </div>
+      </div>
+
+      {/* 汇总 */}
+      <div className="summary-cards" style={{ gridTemplateColumns: 'repeat(2, 1fr)', marginBottom: 20 }}>
+        <div className="summary-card highlight">
+          <div className="card-label" style={{ textAlign: 'center' }}>2026年1-9月 消费总额</div>
+          <div className="card-value" style={{ fontSize: 20, textAlign: 'center' }}>
+            {Object.entries(billsByAccount).map(([accountName, total], idx) => (
+              <div key={accountName} style={{ marginBottom: idx < Object.keys(billsByAccount).length - 1 ? 8 : 0 }}>
+                <span style={{ color: '#000', fontSize: 14, marginRight: 8 }}>{accountName}:</span>
+                <span style={{ fontWeight: 600 }}>¥{fmtMoney(total)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="summary-card">
+          <div className="card-label" style={{ textAlign: 'center' }}>账号可用余额</div>
+          <div className="card-value" style={{ fontSize: 20, textAlign: 'center' }}>
+            {tencentAccounts.map((acct, idx) => (
+              <div key={acct.id} style={{ marginBottom: idx < tencentAccounts.length - 1 ? 8 : 0 }}>
+                <span style={{ color: '#000', fontSize: 14, marginRight: 8 }}>{acct.name}:</span>
+                <span style={{ color: (acct.balance || 0) < 100 ? '#ef4444' : '#10b981', fontWeight: 600 }}>
+                  ¥{fmtMoney(acct.balance || 0)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* 各月账单 */}
+      <div className="section-block">
+        <h3 style={{ fontWeight: 500 }}>各月账单</h3>
+        {loading ? (
+          <div className="empty-state">加载中...</div>
+        ) : allBills.length === 0 ? (
+          <div className="empty-state">
+            {tencentAccounts.length === 0
+              ? '暂无腾讯云账号，请先在平台设置中添加腾讯云账号'
+              : '暂无账单数据，请先同步数据'}
+          </div>
+        ) : viewMode === 'chart' ? (
+          // 柱状图视图 - 每个账号单独一个图表
+          <div style={{ padding: '20px 0' }}>
+            {tencentAccounts.map(account => {
+              // 获取该账号的所有月份数据
+              const accountBills = allBills.filter(b => b.account_name === account.name)
+              const accountMonths = [...new Set(accountBills.map(b => b.billing_cycle))].sort()
+              
+              if (accountMonths.length === 0) return null
+              
+              // 计算该账号的最大值用于Y轴
+              const amounts = accountMonths.map(m => {
+                const monthBills = accountBills.filter(b => b.billing_cycle === m)
+                return monthBills.reduce((sum, b) => sum + b.total_amount, 0)
+              })
+              const maxAmount = Math.max(...amounts, 0)
+              
+              // 智能计算Y轴刻度和间隔
+              let yMax, yInterval
+              if (maxAmount <= 0) {
+                yMax = 100
+                yInterval = 20
+              } else {
+                // 计算合适的间隔：50, 100, 200, 500, 1000, 2000, 5000...
+                const magnitude = Math.pow(10, Math.floor(Math.log10(maxAmount)))
+                const normalized = maxAmount / magnitude
+                
+                if (normalized <= 1) {
+                  yInterval = magnitude * 0.2
+                } else if (normalized <= 2) {
+                  yInterval = magnitude * 0.5
+                } else if (normalized <= 5) {
+                  yInterval = magnitude
+                } else {
+                  yInterval = magnitude * 2
+                }
+                
+                // 向上取整到间隔的倍数，并确保至少有20%的顶部空间
+                yMax = Math.ceil(maxAmount * 1.2 / yInterval) * yInterval
+              }
+              
+              // 生成Y轴刻度
+              const yTicks = []
+              for (let i = 0; i <= yMax; i += yInterval) {
+                yTicks.push(i)
+              }
+              
+              return (
+                <div key={account.id} style={{ marginBottom: 40 }}>
+                  <h4 style={{ fontSize: 15, fontWeight: 500, marginBottom: 16, color: '#1e293b' }}>
+                    {account.name}
+                  </h4>
+                  <div style={{ display: 'flex', gap: 20 }}>
+                    {/* Y轴刻度 */}
+                    <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: 280, paddingRight: 10, borderRight: '1px solid #e2e8f0' }}>
+                      {yTicks.slice().reverse().map((tick, idx) => (
+                        <div key={idx} style={{ fontSize: 11, color: '#94a3b8', textAlign: 'right', minWidth: 50 }}>
+                          ¥{fmtMoney(tick)}
+                        </div>
+                      ))}
+                    </div>
+                    
+                    {/* 柱状图区域 */}
+                    <div style={{ flex: 1, position: 'relative' }}>
+                      {/* 网格线 */}
+                      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 280, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', pointerEvents: 'none' }}>
+                        {yTicks.slice().reverse().map((_, idx) => (
+                          <div key={idx} style={{ borderBottom: '1px dashed #e2e8f0', height: 0 }} />
+                        ))}
+                      </div>
+                      
+                      {/* 柱子容器 - 固定高度280px */}
+                      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 20, height: 280, padding: '0 20px', position: 'relative', borderBottom: '2px solid #cbd5e1' }}>
+                        {accountMonths.map(month => {
+                          const monthBills = accountBills.filter(b => b.billing_cycle === month)
+                          const monthTotal = monthBills.reduce((sum, b) => sum + b.total_amount, 0)
+                          const heightPercent = yMax > 0 ? (monthTotal / yMax) * 100 : 0
+                          
+                          return (
+                            <div key={month} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', position: 'relative', justifyContent: 'flex-end' }}>
+                              {/* 金额标签 */}
+                              <div style={{ 
+                                position: 'absolute', 
+                                bottom: `${heightPercent + 3}%`, 
+                                fontSize: 12, 
+                                color: '#000', 
+                                fontWeight: 500
+                              }}>
+                                ¥{fmtMoney(monthTotal)}
+                              </div>
+                              
+                              {/* 柱子 - 从底部开始 */}
+                              <div style={{ 
+                                width: '100%',
+                                maxWidth: 60,
+                                height: `${heightPercent}%`,
+                                minHeight: monthTotal > 0 ? 20 : 0,
+                                background: 'linear-gradient(180deg, #3b82f6 0%, #60a5fa 100%)',
+                                borderRadius: '4px 4px 0 0',
+                                transition: 'all 0.3s ease'
+                              }} />
+                            </div>
+                          )
+                        })}
+                      </div>
+                      
+                      {/* 月份标签 - 在图表下方 */}
+                      <div style={{ display: 'flex', gap: 20, padding: '8px 20px 0' }}>
+                        {accountMonths.map(month => (
+                          <div key={month} style={{ flex: 1, textAlign: 'center', fontSize: 13, color: '#000', fontWeight: 500 }}>
+                            {month.substring(5)}月
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          // 表格视图
+          <div className="overview-table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>月份</th>
+                  <th>账号名称</th>
+                  <th style={{ textAlign: 'center' }}>消费总额</th>
+                  <th>更新时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedMonths.map(month => (
+                  <Fragment key={month}>
+                    {billsByMonth[month].map((bill, idx) => (
+                      <Fragment key={bill.account_id}>
+                        <tr>
+                          {idx === 0 && (
+                            <td rowSpan={billsByMonth[month].length} style={{ fontWeight: 500, verticalAlign: 'middle' }}>
+                              {month}
+                            </td>
+                          )}
+                          <td>{bill.account_name}</td>
+                          <td style={{ textAlign: 'center' }}>¥{fmtMoney(bill.total_amount)}</td>
+                          <td>{fmtDate(bill.updated_at)}</td>
+                          <td>
+                            <button className="btn-link" onClick={() => setSelectedBill(selectedBill?.account_id === bill.account_id && selectedBill?.billing_cycle === bill.billing_cycle ? null : bill)}>
+                              {selectedBill?.account_id === bill.account_id && selectedBill?.billing_cycle === bill.billing_cycle ? '收起' : '查看明细'}
+                            </button>
+                          </td>
+                        </tr>
+                        {selectedBill?.account_id === bill.account_id && selectedBill?.billing_cycle === bill.billing_cycle && (
+                          <tr>
+                            <td colSpan="5" style={{ padding: 0 }}>
+                              <div className="bill-detail-panel">
+                                <table className="data-table inner-table">
+                                  <thead>
+                                    <tr>
+                                      <th>产品代码</th>
+                                      <th>产品名称</th>
+                                      <th style={{ textAlign: 'right' }}>应付金额</th>
+                                      <th style={{ textAlign: 'right' }}>目录总价</th>
+                                      <th style={{ textAlign: 'right' }}>优惠金额</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {Object.entries(bill.details_summary || {}).map(([key, vals], i) => {
+                                      const parts = key.split('__')
+                                      return (
+                                        <tr key={i}>
+                                          <td style={{ fontSize: 14 }}>{parts[0]}</td>
+                                          <td style={{ fontSize: 14 }}>{parts[1] || '-'}</td>
+                                          <td className="td-amount">¥{fmtMoney(vals.after_tax_amount)}</td>
+                                          <td className="td-amount">¥{fmtMoney(vals.pretax_gross_amount || 0)}</td>
+                                          <td className="td-amount">¥{fmtMoney(vals.invoice_discount || 0)}</td>
+                                        </tr>
+                                      )
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    ))}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ==================== 主应用组件====================
 const PAGE_LABELS = {
-  overview: '资源概览',
+  overview: '账号总览',
   resources: '资源管理',
   network: '网络管理',
   publicip: '公网大全',
   weblinks: '网址大全',
   bills: '账单管理',
+  'tencent-bills': '腾讯云账单',
   accounts: '平台设置',
   ram: 'RAM 管理',
   dns: '域名管理',
@@ -5976,6 +6456,7 @@ function App() {
       case 'publicip': return <PublicIPManagement />
       case 'weblinks': return <WebLinksManagement />
       case 'bills': return <BillManagement />
+      case 'tencent-bills': return <TencentBillManagement />
       case 'accounts': return <AccountManagement />
       case 'ram': return <RamManagement />
       case 'dns': return <DnsManagement />
